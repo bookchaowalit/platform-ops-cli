@@ -222,9 +222,9 @@ def check_heroku():
 
 
 def check_telegram():
-    """Check the infrastructure bot with Telegram getMe (read-only)."""
+    """Check the alert bot (book_noti_bot) with Telegram getMe (read-only)."""
     result = {"name": "Telegram", "icon": "✈️", "status": "unknown"}
-    token = get_env("TELEGRAM_INFRA_BOT_TOKEN") or get_env("TELEGRAM_BOT_TOKEN")
+    token = get_env("TELEGRAM_NOTI_BOT_TOKEN") or get_env("TELEGRAM_BOT_TOKEN")
     if not token:
         result["status"] = "not_configured"
         result["error"] = "Missing Telegram bot token"
@@ -1025,7 +1025,7 @@ def run_health_check(json_output=False, offline=False):
             check_paas_provider("heroku", live=False),
             _credential_only(
                 "Telegram", "✈️",
-                lambda: get_env("TELEGRAM_INFRA_BOT_TOKEN", required=True),
+                lambda: get_env("TELEGRAM_NOTI_BOT_TOKEN") or get_env("TELEGRAM_BOT_TOKEN", required=True),
                 "Missing Telegram bot token",
             ),
             _credential_only(

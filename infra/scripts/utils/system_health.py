@@ -277,7 +277,7 @@ def collect_credentials():
                 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN',
             ))
             telegram_ready = bool(
-                os.environ.get('TELEGRAM_INFRA_BOT_TOKEN')
+                os.environ.get('TELEGRAM_NOTI_BOT_TOKEN')
                 or os.environ.get('TELEGRAM_BOT_TOKEN')
             )
             google = {
