@@ -108,7 +108,7 @@ def test_integration_health_check():
         sandbox_env['SECRETS_PROVIDER'] = 'env'
         for key in ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN',
                     'GITHUB_PERSONAL_ACCESS_TOKEN', 'CLOUDFLARE_API_TOKEN',
-                    'VERCEL_TOKEN', 'TODOIST_API_TOKEN', 'TELEGRAM_INFRA_BOT_TOKEN']:
+                    'VERCEL_TOKEN', 'TODOIST_API_TOKEN', 'TELEGRAM_NOTI_BOT_TOKEN']:
             sandbox_env.pop(key, None)
         result = subprocess.run(
             [sys.executable, str(health_script), '--json', '--offline'],
