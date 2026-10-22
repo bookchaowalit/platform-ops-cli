@@ -4,6 +4,8 @@
 requests>=2.34.2
 # Transitive (via requests) floor for a known vulnerability: idna GHSA-65pc-fj4g-8rjx.
 idna>=3.15
+# Transitive (via requests) floor for a known vulnerability: certifi PYSEC-2026-4320.
+certifi>=2026.10.19
 PyYAML>=6.0.3
 # Document metadata validator (docs:meta:check)
 jsonschema>=4.19,<5
