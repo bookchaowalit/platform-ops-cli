@@ -33,9 +33,12 @@ own repo-scoped registration. Organization repositories share one org-scoped reg
 An idle runner container uses about 0.2 GB of memory (0.36 GB on average with jobs), roughly
 $4 a month on Railway. To keep the cost down, new runners go into one service instead of one
 service each: when `RUNNERS` is set, the image starts `multi-runner.sh`, which runs one runner per
-`name=url` entry (`url` is a repository or an organization) in the same container. The runner
-binaries are hard-linked, so each extra runner adds only its own process. Registration files are
-kept per runner under `/runner-config/<name>` on the volume.
+`name=url` entry (`url` is a repository or an organization) in the same container. The image
+holds eight runner slots hard-linked at build time, so all runners share one set of binaries and
+one page cache (linking at runtime would copy every file up into the container layer and cost
+about 1 GB of billed memory). Measured 2026-10-23: four idle runners use 0.17 GB, less than one
+single-runner service (0.24 GB). Registration files are kept per runner under
+`/runner-config/<name>` on the volume.
 
 Add a runner (the service restarts and the other runners re-attach from the volume):
 

@@ -9,7 +9,7 @@ export RUNNER_ALLOW_RUNASROOT=1
 
 CONFIG_ROOT=${CONFIG_ROOT:-/runner-config}
 LABELS=${LABELS:-self-hosted,linux,x64,railway}
-mkdir -p /opt/runners
+slot=0
 
 # Register everything first, then drop the registration tokens from the environment so no job
 # (all runners share this container) can read them.
@@ -17,11 +17,15 @@ specs=${RUNNERS:?set RUNNERS to name=url entries}
 for spec in $specs; do
   name=${spec%%=*}
   url=${spec#*=}
-  dir=/opt/runners/$name
   saved=$CONFIG_ROOT/$name
-  # Hard links share the runner binaries; config writes new files, so copies stay separate.
-  rm -rf "$dir"
-  cp -al /actions-runner "$dir"
+  # Pre-built hard-linked copies (Dockerfile) share the runner binaries; config writes new files.
+  slot=$((slot + 1))
+  dir=/opt/runners/slot$slot
+  if [[ ! -d $dir ]]; then
+    echo "$name: no runner slot $slot (the image has 8)" >&2
+    exit 1
+  fi
+  ln -sfn "$dir" "/opt/runners/$name"
   if [[ -f $saved/.runner ]]; then
     cp -p "$saved"/.[!.]* "$dir"/
   else
