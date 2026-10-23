@@ -6,6 +6,7 @@
 # its registration files are then kept on the volume and reused on restart.
 set -euo pipefail
 export RUNNER_ALLOW_RUNASROOT=1
+export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/bin/job-cleanup.sh
 
 CONFIG_ROOT=${CONFIG_ROOT:-/runner-config}
 LABELS=${LABELS:-self-hosted,linux,x64,railway}

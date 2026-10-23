@@ -36,8 +36,15 @@ service each: when `RUNNERS` is set, the image starts `multi-runner.sh`, which r
 `name=url` entry (`url` is a repository or an organization) in the same container. The image
 holds twelve runner slots hard-linked at build time, so all runners share one set of binaries and
 one page cache (linking at runtime would copy every file up into the container layer and cost
-about 1 GB of billed memory). Measured 2026-10-23: four idle runners use 0.17 GB, less than one
-single-runner service (0.24 GB). Registration files are kept per runner under
+about 1 GB of billed memory). Measured 2026-10-23: eight idle runners use 0.17 GB after a restart and about
+0.64 GB after jobs, against 0.24 GB idle for one single-runner service.
+
+After each job, `job-cleanup.sh` (the runner's job-completed hook) deletes the dependency caches
+(`~/.cache`, `~/.npm`, `~/.local`, the tool cache) and stops the test PostgreSQL when no other job
+in the container is running: Railway bills page cache as memory and an idle container never
+reclaims it (2.5 GB after one sales-crm run without the hook, 0.64 GB with it). Jobs download their
+dependencies again, which makes them slower; inbound traffic is not billed. The runner runs the hook
+with `bash -e -o pipefail` and only accepts a `.sh` path, so every step in it must be non-fatal. Registration files are kept per runner under
 `/runner-config/<name>` on the volume.
 
 Add a runner (the service restarts and the other runners re-attach from the volume):

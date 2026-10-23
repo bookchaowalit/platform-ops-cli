@@ -30,6 +30,7 @@ RUN chmod +x /usr/local/bin/start-postgres
 RUN mkdir -p /opt/runners && for i in $(seq 1 12); do cp -al /actions-runner /opt/runners/slot$i; done
 COPY multi-runner.sh /usr/local/bin/multi-runner
 COPY entrypoint.sh /usr/local/bin/railway-entrypoint
-RUN chmod +x /usr/local/bin/multi-runner /usr/local/bin/railway-entrypoint
+COPY job-cleanup.sh /usr/local/bin/job-cleanup.sh
+RUN chmod +x /usr/local/bin/multi-runner /usr/local/bin/railway-entrypoint /usr/local/bin/job-cleanup.sh
 ENTRYPOINT ["/usr/local/bin/railway-entrypoint"]
 CMD ["./bin/Runner.Listener", "run", "--startuptype", "service"]
