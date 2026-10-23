@@ -23,3 +23,9 @@ RUN sed -i "s/^#\?listen_addresses.*/listen_addresses = '127.0.0.1'/" /etc/postg
 
 COPY start-postgres.sh /usr/local/bin/start-postgres
 RUN chmod +x /usr/local/bin/start-postgres
+
+COPY multi-runner.sh /usr/local/bin/multi-runner
+COPY entrypoint.sh /usr/local/bin/railway-entrypoint
+RUN chmod +x /usr/local/bin/multi-runner /usr/local/bin/railway-entrypoint
+ENTRYPOINT ["/usr/local/bin/railway-entrypoint"]
+CMD ["./bin/Runner.Listener", "run", "--startuptype", "service"]

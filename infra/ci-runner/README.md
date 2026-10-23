@@ -25,9 +25,34 @@ If GitHub deletes the registration (the runner was offline too long), the volume
 config and the runner logs "registration has been deleted": replace the volume with an empty one,
 set a fresh `RUNNER_TOKEN`, and redeploy.
 
-Personal-account repositories (`bookchaowalit/*`) cannot share a runner; each needs its own
-service with `RUNNER_SCOPE=repo` and `REPO_URL`. Organization repositories can share one
-service with `RUNNER_SCOPE=org` and `ORG_NAME`.
+Personal-account repositories (`bookchaowalit/*`) cannot use an organization runner; each needs its
+own repo-scoped registration. Organization repositories share one org-scoped registration.
+
+## Several runners in one service (`runner-multi`)
+
+An idle runner container uses about 0.2 GB of memory (0.36 GB on average with jobs), roughly
+$4 a month on Railway. To keep the cost down, new runners go into one service instead of one
+service each: when `RUNNERS` is set, the image starts `multi-runner.sh`, which runs one runner per
+`name=url` entry (`url` is a repository or an organization) in the same container. The runner
+binaries are hard-linked, so each extra runner adds only its own process. Registration files are
+kept per runner under `/runner-config/<name>` on the volume.
+
+Add a runner (the service restarts and the other runners re-attach from the volume):
+
+```bash
+# one-hour registration token from the Infisical GitHub PAT (has admin:org), never printed
+infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /github --silent -- bash -c '
+  t=$(curl -sf -X POST -H "Authorization: token $GITHUB_PERSONAL_ACCESS_TOKEN" \
+      https://api.github.com/repos/<owner>/<repo>/actions/runners/registration-token | jq -r .token)
+  npx -y @railway/cli@latest variables -s runner-multi --skip-deploys \
+      --set "RUNNERS=<existing entries> <name>=https://github.com/<owner>/<repo>" \
+      --set "RUNNER_TOKEN_<NAME>=$t"'
+npx -y @railway/cli@latest up --detach -s runner-multi   # from this folder
+```
+
+Then delete `RUNNER_TOKEN_<NAME>` (it has expired anyway). If GitHub removes a registration after
+the runner was offline too long, delete `/runner-config/<name>` (or the whole volume) and register
+again. Peak memory is the sum of the jobs running at once, so a busy day costs more than idle.
 
 ## Services
 
@@ -37,9 +62,13 @@ service with `RUNNER_SCOPE=org` and `ORG_NAME`.
 | `runner-book-storybook` | repo | `bookchaowalit/book-storybook` |
 | `runner-azure-migration-design` | repo | `bookchaowalit/azure-migration-design` |
 | `runner-marketing-linerichmenu-web` | repo | `bookchaowalit-website/marketing-linerichmenu-web` |
+| `runner-multi` | repo | `bookchaowalit/architecture-docs`, `bookchaowalit/realestate-lead-extension` |
+| `runner-multi` | org | `bookchaowalit-products`, `bookchaowalit-ai` |
 
-`bookchaowalit-website` has one private repository, so it uses a repo-scoped runner: an org-scoped
-registration token needs the `admin:org` scope, which the local `gh` token does not have.
+`bookchaowalit-website` has one private repository, so it uses a repo-scoped runner. Org-scoped
+registration tokens need `admin:org`: the local `gh` token lacks it, the Infisical `/github` PAT has it.
+Other organizations with private repositories (`bookchaowalit-freelance` client work, the `*-hub`
+repositories) have no CI workflows, so they get no runner until they do.
 
 ## Client repositories: no CI
 
