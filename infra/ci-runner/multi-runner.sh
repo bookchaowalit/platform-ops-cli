@@ -11,7 +11,10 @@ CONFIG_ROOT=${CONFIG_ROOT:-/runner-config}
 LABELS=${LABELS:-self-hosted,linux,x64,railway}
 mkdir -p /opt/runners
 
-for spec in ${RUNNERS:?set RUNNERS to name=url entries}; do
+# Register everything first, then drop the registration tokens from the environment so no job
+# (all runners share this container) can read them.
+specs=${RUNNERS:?set RUNNERS to name=url entries}
+for spec in $specs; do
   name=${spec%%=*}
   url=${spec#*=}
   dir=/opt/runners/$name
@@ -34,8 +37,15 @@ for spec in ${RUNNERS:?set RUNNERS to name=url entries}; do
     cp -p "$dir"/.runner "$dir"/.credentials "$dir"/.credentials_rsaparams "$saved"/
     for f in .env .path; do [[ -f $dir/$f ]] && cp -p "$dir/$f" "$saved"/; done
   fi
-  (cd "$dir" && exec ./run.sh) &
-  echo "$name: started for $url"
+  chmod 700 "$saved"
+done
+
+for var in "${!RUNNER_TOKEN_@}"; do unset "$var"; done
+
+for spec in $specs; do
+  name=${spec%%=*}
+  (cd "/opt/runners/$name" && exec ./run.sh) &
+  echo "$name: started for ${spec#*=}"
 done
 
 # If any runner stops, exit so Railway restarts the whole container.

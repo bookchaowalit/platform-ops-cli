@@ -50,7 +50,14 @@ infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /github --sil
 npx -y @railway/cli@latest up --detach -s runner-multi   # from this folder
 ```
 
-Then delete `RUNNER_TOKEN_<NAME>` (it has expired anyway). If GitHub removes a registration after
+Then delete `RUNNER_TOKEN_<NAME>` (it has expired anyway; the script also unsets every
+`RUNNER_TOKEN_*` before any runner takes a job).
+
+Trust model (accepted 2026-10-23): runners in one container share a filesystem and run jobs as root,
+as the single-runner services already do, so a job could read another runner's registration on the
+volume. That is acceptable only because every runner here serves the owner's own private
+repositories (no outside contributors, no fork pull requests). A repository with outside
+contributors, or a client repository, must not join `runner-multi`: give it its own service. If GitHub removes a registration after
 the runner was offline too long, delete `/runner-config/<name>` (or the whole volume) and register
 again. Peak memory is the sum of the jobs running at once, so a busy day costs more than idle.
 
