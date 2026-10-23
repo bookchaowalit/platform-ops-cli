@@ -196,6 +196,16 @@ class MonitorHealthTest(unittest.TestCase):
             check = self.check(monitor.build_report(self.root, now=self.now, probe=True), "service:example")
         self.assertEqual((check["status"], check["coverage"]), ("unknown", "missing"))
 
+    def test_data_products_come_from_the_v3_freeze(self):
+        # v3 (2026-10-23) retires ai_tools on :8107; the monitor must not probe it.
+        self.assertEqual(monitor.PRODUCT_SOURCE, "systems/architecture/data-product-contracts-v3.yaml")
+        self.write_yaml(monitor.PRODUCT_SOURCE, "products:\n  - id: crypto\n    port: 8101\n")
+        self.write_yaml("systems/architecture/data-product-contracts-v2.yaml",
+                        "products:\n  - id: ai_tools\n    port: 8107\n")
+        ids = {c["id"] for c in self.build()["checks"]}
+        self.assertIn("data-product:crypto", ids)
+        self.assertNotIn("data-product:ai_tools", ids)
+
     def test_registry_failure_is_visible(self):
         self.write_yaml("repository-catalog/registries/system-repositories.yaml", "systems: broken")
         report = monitor.build_report(self.root, now=self.now, probe=False)
@@ -203,7 +213,7 @@ class MonitorHealthTest(unittest.TestCase):
 
     def test_malformed_or_duplicate_inventory_is_not_silently_dropped(self):
         self.write_yaml("infra/platform/cloud-providers.yaml", "providers:\n  - id: example\n    name: Example\n  - id: example\n    name: Duplicate\n  - missing: id\n")
-        self.write_yaml("systems/architecture/data-product-contracts-v2.yaml", "products:\n  - bad: shape\n")
+        self.write_yaml("systems/architecture/data-product-contracts-v3.yaml", "products:\n  - bad: shape\n")
         report = self.build()
         self.assertEqual(self.check(report, "cloud-registry")["status"], "unavailable")
         self.assertEqual(self.check(report, "product-registry")["status"], "unavailable")
