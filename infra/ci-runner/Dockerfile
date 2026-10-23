@@ -27,7 +27,7 @@ RUN chmod +x /usr/local/bin/start-postgres
 # Runner slots for multi-runner.sh, hard-linked here at build time: one set of inodes in this layer,
 # so the runners share page cache. Linking at runtime instead copies every file up into the
 # container layer (overlayfs) and costs ~1 GB of billed memory for four runners.
-RUN mkdir -p /opt/runners && for i in 1 2 3 4 5 6 7 8; do cp -al /actions-runner /opt/runners/slot$i; done
+RUN mkdir -p /opt/runners && for i in $(seq 1 12); do cp -al /actions-runner /opt/runners/slot$i; done
 COPY multi-runner.sh /usr/local/bin/multi-runner
 COPY entrypoint.sh /usr/local/bin/railway-entrypoint
 RUN chmod +x /usr/local/bin/multi-runner /usr/local/bin/railway-entrypoint

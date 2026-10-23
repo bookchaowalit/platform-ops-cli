@@ -34,7 +34,7 @@ An idle runner container uses about 0.2 GB of memory (0.36 GB on average with jo
 $4 a month on Railway. To keep the cost down, new runners go into one service instead of one
 service each: when `RUNNERS` is set, the image starts `multi-runner.sh`, which runs one runner per
 `name=url` entry (`url` is a repository or an organization) in the same container. The image
-holds eight runner slots hard-linked at build time, so all runners share one set of binaries and
+holds twelve runner slots hard-linked at build time, so all runners share one set of binaries and
 one page cache (linking at runtime would copy every file up into the container layer and cost
 about 1 GB of billed memory). Measured 2026-10-23: four idle runners use 0.17 GB, less than one
 single-runner service (0.24 GB). Registration files are kept per runner under
@@ -53,6 +53,9 @@ infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /github --sil
 npx -y @railway/cli@latest up --detach -s runner-multi   # from this folder
 ```
 
+Redeploy only while no job is running: a job queued while the old container is shutting down can
+stay queued after the new runners are online (seen 2026-10-23); cancel and re-run it.
+
 Then delete `RUNNER_TOKEN_<NAME>` (it has expired anyway; the script also unsets every
 `RUNNER_TOKEN_*` before any runner takes a job).
 
@@ -66,16 +69,25 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 
 ## Services
 
-| Service | Scope | Target |
-| --- | --- | --- |
-| `runner-sales-crm` | repo | `bookchaowalit/sales-crm` |
-| `runner-book-storybook` | repo | `bookchaowalit/book-storybook` |
-| `runner-azure-migration-design` | repo | `bookchaowalit/azure-migration-design` |
-| `runner-marketing-linerichmenu-web` | repo | `bookchaowalit-website/marketing-linerichmenu-web` |
-| `runner-multi` | repo | `bookchaowalit/architecture-docs`, `bookchaowalit/realestate-lead-extension` |
-| `runner-multi` | org | `bookchaowalit-products`, `bookchaowalit-ai` |
+| Service | Runner | Scope | Target |
+| --- | --- | --- | --- |
+| `runner-multi` | `railway-architecture-docs` | repo | `bookchaowalit/architecture-docs` |
+| `runner-multi` | `railway-realestate-lead-extension` | repo | `bookchaowalit/realestate-lead-extension` |
+| `runner-multi` | `railway-sales-crm` | repo | `bookchaowalit/sales-crm` |
+| `runner-multi` | `railway-book-storybook` | repo | `bookchaowalit/book-storybook` |
+| `runner-multi` | `railway-azure-migration-design` | repo | `bookchaowalit/azure-migration-design` |
+| `runner-multi` | `railway-org-products` | org | `bookchaowalit-products` |
+| `runner-multi` | `railway-org-ai` | org | `bookchaowalit-ai` |
+| `runner-multi` | `railway-org-website` | org | `bookchaowalit-website` (covers `marketing-linerichmenu-web`) |
 
-`bookchaowalit-website` has one private repository, so it uses a repo-scoped runner. Org-scoped
+On 2026-10-23 the four one-runner services (`runner-sales-crm`, `runner-book-storybook`,
+`runner-azure-migration-design`, `runner-marketing-linerichmenu-web`) moved into `runner-multi` and
+were stopped with `railway down` (services and volumes kept). To go back: redeploy the old service
+with a fresh `RUNNER_TOKEN` and remove its entry from `RUNNERS`. Only `sales-crm` uses
+`start-postgres`; the shared PostgreSQL would need one database per repository before a second
+repository starts using it.
+
+`bookchaowalit-website` now uses an org runner. Org-scoped
 registration tokens need `admin:org`: the local `gh` token lacks it, the Infisical `/github` PAT has it.
 Other organizations with private repositories (`bookchaowalit-freelance` client work, the `*-hub`
 repositories) have no CI workflows, so they get no runner until they do.
