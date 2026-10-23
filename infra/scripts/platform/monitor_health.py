@@ -31,7 +31,7 @@ from task_store import ClientConfigError  # noqa: E402
 
 SYSTEM_SOURCE = "repository-catalog/registries/system-repositories.yaml"
 CLOUD_SOURCE = "infra/platform/cloud-providers.yaml"
-PRODUCT_SOURCE = "systems/architecture/data-product-contracts-v3.yaml"
+PRODUCT_SOURCE = "systems/architecture/data-product-contracts-v4.yaml"
 SCRAPING_SOURCE = "data/generated/briefings/scraping-collection-health.json"
 MAX_BYTES = 2_000_000
 MAX_TARGETS = 128

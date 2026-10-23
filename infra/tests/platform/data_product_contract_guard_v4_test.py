@@ -1,7 +1,8 @@
-"""The contract guard checks data-product-contracts-v3, which retires ai_tools (:8107).
+"""The contract guard checks data-product-contracts-v4, which retires flights (:8105).
 
-Owner approved the retirement on 2026-10-23 (architecture-docs 89a679c) so
-bookchaowalit/tech-ai-tools-data can be archived. Self-contained: the freeze is
+Owner approved the retirement on 2026-10-23 (architecture-docs e11e074) so
+bookchaowalit/travel-flight-price-data can be archived. v3 had already retired
+ai_tools (:8107); both ports are never reused. Self-contained: the freeze is
 written to a temp file, so the test runs without an architecture-docs checkout.
 """
 
@@ -18,20 +19,20 @@ sys.path.insert(0, str(ROOT / "scripts" / "utils"))
 
 import data_product_contract_guard as guard  # noqa: E402
 
-V3_IDS = ["crypto", "stocks", "fx", "defi", "flights", "seo"]
+V4_IDS = ["crypto", "stocks", "fx", "defi", "seo"]
+V4_PORTS = [8101, 8102, 8103, 8104, 8106]
 ROWS = [
     ("crypto", 8101, "crypto.v1", "book-crypto-data", "book_crypto"),
     ("stocks", 8102, "stock.v1", "book-stock-data", "book_stock"),
     ("fx", 8103, "fx.v1", "book-fx-data", "book_fx"),
     ("defi", 8104, "defi.v1", "book-defi-data", "book_defi"),
-    ("flights", 8105, "flight.v1", "book-flight-data", "book_flight"),
     ("seo", 8106, "seo.v1", "book-seo-data", "book_seo"),
 ]
-HEADER = """freeze_id: data-product-contracts-v3
+HEADER = """freeze_id: data-product-contracts-v4
 status: frozen
 retired_rows:
-  products: [ai_tools]
-  ports: [8107]
+  products: [ai_tools, flights]
+  ports: [8105, 8107]
 endpoints:
   refresh:
     method: POST
@@ -63,10 +64,10 @@ def freeze_text(rows) -> str:
     return HEADER + body + "consumers:\n  - id: x\n"
 
 
-class ContractGuardV3Tests(unittest.TestCase):
+class ContractGuardV4Tests(unittest.TestCase):
     def check(self, text: str) -> list[str]:
         with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "data-product-contracts-v3.yaml"
+            path = Path(temp) / "data-product-contracts-v4.yaml"
             path.write_text(text, encoding="utf-8")
             with patch.object(guard, "FREEZE_PATH", path):
                 freeze = guard.parse_freeze_yaml()
@@ -74,13 +75,15 @@ class ContractGuardV3Tests(unittest.TestCase):
                 guard.check_freeze_file(errors, freeze)
         return errors
 
-    def test_guard_targets_v3(self):
-        self.assertEqual(guard.FREEZE_PATH.name, "data-product-contracts-v3.yaml")
-        self.assertEqual([p["id"] for p in guard.EXPECTED_PRODUCTS], V3_IDS)
+    def test_guard_targets_v4(self):
+        self.assertEqual(guard.FREEZE_PATH.name, "data-product-contracts-v4.yaml")
+        self.assertEqual(guard.FREEZE_ID, "data-product-contracts-v4")
+        self.assertEqual([p["id"] for p in guard.EXPECTED_PRODUCTS], V4_IDS)
+        self.assertEqual(tuple(sorted(guard.RETIRED_PORTS)), (8105, 8107))
         for spec in guard.CONSUMER_SPECS:
-            self.assertEqual(spec["ports"], [8101, 8102, 8103, 8104, 8105, 8106])
+            self.assertEqual(spec["ports"], V4_PORTS)
 
-    def test_six_product_v3_freeze_passes(self):
+    def test_five_product_v4_freeze_passes(self):
         self.assertEqual(self.check(freeze_text(ROWS)), [])
 
     def test_retired_ai_tools_row_fails(self):
@@ -88,8 +91,13 @@ class ContractGuardV3Tests(unittest.TestCase):
         errors = self.check(freeze_text(rows))
         self.assertTrue(any("8107" in error for error in errors), errors)
 
-    def test_v2_freeze_id_is_rejected(self):
-        errors = self.check(freeze_text(ROWS).replace("data-product-contracts-v3", "data-product-contracts-v2", 1))
+    def test_retired_flights_row_fails(self):
+        rows = ROWS[:4] + [("flights", 8105, "flight.v1", "book-flight-data", "book_flight")] + ROWS[4:]
+        errors = self.check(freeze_text(rows))
+        self.assertTrue(any("8105" in error for error in errors), errors)
+
+    def test_v3_freeze_id_is_rejected(self):
+        errors = self.check(freeze_text(ROWS).replace("data-product-contracts-v4", "data-product-contracts-v3", 1))
         self.assertTrue(any("freeze_id" in error for error in errors), errors)
 
 
