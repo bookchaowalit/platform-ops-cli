@@ -23,7 +23,7 @@ for spec in $specs; do
   slot=$((slot + 1))
   dir=/opt/runners/slot$slot
   if [[ ! -d $dir ]]; then
-    echo "$name: no runner slot $slot (the image has 12)" >&2
+    echo "$name: no runner slot $slot (the image has 16)" >&2
     exit 1
   fi
   ln -sfn "$dir" "/opt/runners/$name"

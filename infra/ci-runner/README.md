@@ -34,7 +34,7 @@ An idle runner container uses about 0.2 GB of memory (0.36 GB on average with jo
 $4 a month on Railway. To keep the cost down, new runners go into one service instead of one
 service each: when `RUNNERS` is set, the image starts `multi-runner.sh`, which runs one runner per
 `name=url` entry (`url` is a repository or an organization) in the same container. The image
-holds twelve runner slots hard-linked at build time, so all runners share one set of binaries and
+holds sixteen runner slots hard-linked at build time, so all runners share one set of binaries and
 one page cache (linking at runtime would copy every file up into the container layer and cost
 about 1 GB of billed memory). Measured 2026-10-23: eight idle runners use 0.17 GB after a restart and about
 0.64 GB after jobs, against 0.24 GB idle for one single-runner service.
@@ -86,6 +86,17 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 | `runner-multi` | `railway-org-products` | org | `bookchaowalit-products` |
 | `runner-multi` | `railway-org-ai` | org | `bookchaowalit-ai` |
 | `runner-multi` | `railway-org-website` | org | `bookchaowalit-website` (covers `marketing-linerichmenu-web`) |
+| `runner-multi` | `railway-business-catalog` | repo | `bookchaowalit/business-catalog` |
+| `runner-multi` | `railway-knowledge-base` | repo | `bookchaowalit/knowledge-base` |
+| `runner-multi` | `railway-media-assets` | repo | `bookchaowalit/media-assets` |
+| `runner-multi` | `railway-venture-freelance-dev` | repo | `bookchaowalit/venture-freelance-dev` |
+| `runner-multi` | `railway-venture-freelance-seo` | repo | `bookchaowalit/venture-freelance-seo` |
+| `runner-multi` | `railway-venture-saas` | repo | `bookchaowalit/venture-saas` |
+| `runner-multi` | `railway-venture-job-agency` | repo | `bookchaowalit-agency/venture-job-agency` |
+
+On 2026-10-24 seven private docs repositories joined `runner-multi` (repo-scoped, one slot each, image
+raised to sixteen slots). They only run `markdownlint-cli2`, so they add little memory. All seven have
+the owner as the only collaborator, so they fit the trust model above.
 
 On 2026-10-23 the four one-runner services (`runner-sales-crm`, `runner-book-storybook`,
 `runner-azure-migration-design`, `runner-marketing-linerichmenu-web`) moved into `runner-multi` and
