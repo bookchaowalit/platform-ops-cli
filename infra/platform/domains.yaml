@@ -68,9 +68,9 @@ platform:
     xaas: faas
     target: cloudflare-workers
     access: public-signed
-    status: reserved
+    status: live
     phase: Slice A4
-    note: Worker source in infra/hooks-worker (solo-empire-hooks, Stripe-only slice); not deployed, pending owner R2 bucket, secret, and DNS binding
+    note: Worker bookchaowalit/platform-webhooks-worker (solo-empire-hooks, Stripe-only slice); custom domain + R2 bucket 2026-10-23; Stripe live endpoint we_1UU0wgKKW2mNhAm655H3D0Za and STRIPE_WEBHOOK_SECRET (Infisical /stripe) set 2026-10-24, signed smoke 200 + R2 write verified
   - host: hub.bookchaowalit.com
     purpose: Tools Hub, provider registry, and XaaS learning map
     xaas: paas
