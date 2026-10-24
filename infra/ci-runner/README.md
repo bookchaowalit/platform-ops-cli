@@ -83,9 +83,9 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 | `runner-multi` | `railway-sales-crm` | repo | `bookchaowalit/sales-crm` |
 | `runner-multi` | `railway-book-storybook` | repo | `bookchaowalit/book-storybook` |
 | `runner-multi` | `railway-azure-migration-design` | repo | `bookchaowalit/azure-migration-design` |
-| `runner-multi` | `railway-org-products` | org | `bookchaowalit-products` |
+| `runner-multi` | `railway-digital-products` | repo | `bookchaowalit/commerce-digital-products-web` |
 | `runner-multi` | `railway-org-ai` | org | `bookchaowalit-ai` |
-| `runner-multi` | `railway-org-website` | org | `bookchaowalit-website` (covers `marketing-linerichmenu-web`) |
+| `runner-multi` | `railway-linerichmenu` | repo | `bookchaowalit/marketing-linerichmenu-web` |
 | `runner-multi` | `railway-business-catalog` | repo | `bookchaowalit/business-catalog` |
 | `runner-multi` | `railway-knowledge-base` | repo | `bookchaowalit/knowledge-base` |
 | `runner-multi` | `railway-media-assets` | repo | `bookchaowalit/media-assets` |
@@ -93,6 +93,14 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 | `runner-multi` | `railway-venture-freelance-seo` | repo | `bookchaowalit/venture-freelance-seo` |
 | `runner-multi` | `railway-venture-saas` | repo | `bookchaowalit/venture-saas` |
 | `runner-multi` | `railway-venture-job-agency` | repo | `bookchaowalit-agency/venture-job-agency` |
+
+On 2026-10-24 `commerce-digital-products-web` and `marketing-linerichmenu-web` moved from their
+organizations to the personal account (Vercel Hobby refuses Git links to private organization
+repositories). Their organizations had no other repository with CI, so the org runners
+`org-products` and `org-website` were replaced in place in `RUNNERS` (same slots) by the repo runners
+`digital-products` and `linerichmenu`. The org registrations stay on GitHub, offline, until GitHub
+removes them; their saved config under `/runner-config/org-*` is kept, so putting the entries back
+restores them.
 
 On 2026-10-24 seven private docs repositories joined `runner-multi` (repo-scoped, one slot each, image
 raised to sixteen slots). They only run `markdownlint-cli2`, so they add little memory. All seven have
@@ -105,7 +113,7 @@ with a fresh `RUNNER_TOKEN` and remove its entry from `RUNNERS`. Only `sales-crm
 `start-postgres`; the shared PostgreSQL would need one database per repository before a second
 repository starts using it.
 
-`bookchaowalit-website` now uses an org runner. Org-scoped
+Org-scoped
 registration tokens need `admin:org`: the local `gh` token lacks it, the Infisical `/github` PAT has it.
 Other organizations with private repositories (`bookchaowalit-freelance` client work, the `*-hub`
 repositories) have no CI workflows, so they get no runner until they do.
