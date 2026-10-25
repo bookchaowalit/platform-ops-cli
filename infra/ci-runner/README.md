@@ -93,6 +93,7 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 | `runner-multi` | `railway-venture-freelance-seo` | repo | `bookchaowalit/venture-freelance-seo` |
 | `runner-multi` | `railway-venture-saas` | repo | `bookchaowalit/venture-saas` |
 | `runner-multi` | `railway-venture-job-agency` | repo | `bookchaowalit-agency/venture-job-agency` |
+| `runner-multi` | `railway-solo-empire` | repo | `bookchaowalit/solo-empire` |
 
 On 2026-10-24 `commerce-digital-products-web` and `marketing-linerichmenu-web` moved from their
 organizations to the personal account (Vercel Hobby refuses Git links to private organization
@@ -105,6 +106,10 @@ restores them.
 On 2026-10-24 seven private docs repositories joined `runner-multi` (repo-scoped, one slot each, image
 raised to sixteen slots). They only run `markdownlint-cli2`, so they add little memory. All seven have
 the owner as the only collaborator, so they fit the trust model above.
+
+On 2026-10-25 the hub `bookchaowalit/solo-empire` took the sixteenth (last) slot for its weekly
+`mcp-catalog-refresh` workflow (one small Python job a week; owner is the only collaborator). The image
+is now full: the next runner needs more slots in the image or a second service.
 
 On 2026-10-23 the four one-runner services (`runner-sales-crm`, `runner-book-storybook`,
 `runner-azure-migration-design`, `runner-marketing-linerichmenu-web`) moved into `runner-multi` and
