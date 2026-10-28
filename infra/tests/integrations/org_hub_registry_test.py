@@ -217,6 +217,25 @@ class RegistrySyncTest(unittest.TestCase):
             self.m.prepare_checkout(root, 'test-org/test-hub', 'main', 'irrelevant', apply=False)
         self.assertEqual(error.exception.code, 'unexpected_branch')
 
+    def test_clone_missing_creates_a_tracking_checkout_and_leaves_existing_paths(self):
+        root, remote = self.checkout()
+        target = self.base / 'cloned-hub'
+        with patch.object(self.m, 'CLONE_URL', str(remote)):
+            self.m.clone_checkout(target, 'test-org/test-hub', 'main')
+        self.assertEqual(git(target, 'rev-parse', 'HEAD'), git(root, 'rev-parse', 'HEAD'))
+        self.assertEqual(git(target, 'branch', '--show-current'), 'main')
+        self.assertEqual(git(target, 'rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main')
+        (root / 'README.md').write_text('Owner draft\n')
+        with patch.object(self.m, '_command', side_effect=AssertionError('no clone over a path')):
+            self.m.clone_checkout(root, 'test-org/test-hub', 'main')
+        self.assertEqual((root / 'README.md').read_text(), 'Owner draft\n')
+
+    def test_failed_clone_is_reported_with_its_own_code(self):
+        with patch.object(self.m, 'CLONE_URL', str(self.base / 'missing.git')), \
+                self.assertRaises(self.m.SyncError) as error:
+            self.m.clone_checkout(self.base / 'test-hub', 'test-org/test-hub', 'main')
+        self.assertEqual(error.exception.code, 'git_clone_failed')
+
     def graph(self, fail_inventory=False, personal_sync=None):
         index = {'schema_version': 'bookchaowalit.empire-hubs.v1', 'updated': '2026-01-01',
                  'repository': 'test/empire', 'personal_hub': {'owner': 'test',

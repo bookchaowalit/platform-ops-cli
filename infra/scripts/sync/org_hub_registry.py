@@ -2,8 +2,9 @@
 """Refresh explicitly configured organization and personal hub projections using GitHub CLI.
 
 Preview is read-only. --check exits 1 on drift; --apply writes and commits scoped
-projections; --apply --publish also pushes. Blockers exit 2. No credentials or
-project contents are copied into reports or the umbrella index.
+projections; --apply --publish also pushes. --clone-missing clones hubs that have no
+checkout yet (hosted runs start empty). Blockers exit 2. No credentials or project
+contents are copied into reports or the umbrella index.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ REPOSITORY_SLUG = re.compile(r'\.?[A-Za-z0-9][A-Za-z0-9_.-]*\Z')  # GitHub allow
 ORGANIZATION_SCOPE = 'All organization repositories except this hub, including archived repositories.'
 INVENTORY_SCHEMA = 'bookchaowalit.org-hub.v1'
 INDEX_SCHEMA = 'bookchaowalit.empire-hubs.v1'
+CLONE_URL = 'https://github.com/{}.git'
 
 
 class SyncError(RuntimeError):
@@ -302,6 +304,14 @@ def prepare_checkout(root: Path, repository: str, branch: str, remote_sha: str, 
         _git(root, 'merge', '--quiet', '--ff-only', 'FETCH_HEAD')
 
 
+def clone_checkout(root: Path, repository: str, branch: str) -> None:
+    """Clone a missing hub; an existing path is left for prepare_checkout to verify."""
+    if root.exists() or root.is_symlink():
+        return
+    _command(['git', 'clone', '--quiet', '--single-branch', '--branch', branch, '--',
+              CLONE_URL.format(repository), str(root)], 'git_clone_failed')
+
+
 def _atomic(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
@@ -376,7 +386,7 @@ def _revision(client: GitHub, repository: str, branch: str) -> str:
 
 
 def synchronize(index_path: Path, base: Path, *, apply: bool, publish: bool,
-                client: GitHub | None = None, today: str | None = None) -> dict:
+                client: GitHub | None = None, today: str | None = None, clone: bool = False) -> dict:
     client = client or GitHub()
     today = today or datetime.now(ZoneInfo('Asia/Bangkok')).date().isoformat()
     index_path, base = index_path.resolve(), base.resolve()
@@ -454,6 +464,8 @@ def synchronize(index_path: Path, base: Path, *, apply: bool, publish: bool,
             hub_root, inv_path, readme_path = projection_paths(entry, base)
             if meta['visibility'] != 'private' or meta.get('archived'):
                 raise SyncError('hub_not_writable_private')
+            if clone:
+                clone_checkout(hub_root, entry['repository'], meta['default_branch'])
             prepare_checkout(hub_root, entry['repository'], meta['default_branch'], revision, apply=apply)
             hub_root, inv_path, readme_path = projection_paths(entry, base)
             existing = _json(inv_path) if inv_path.exists() else None
@@ -513,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--apply', action='store_true')
     parser.add_argument('--publish', action='store_true')
+    parser.add_argument('--clone-missing', action='store_true')
     args = parser.parse_args(argv)
     if (args.publish and not args.apply) or (args.check and args.apply):
         parser.error('--publish requires --apply; --check and --apply are mutually exclusive')
@@ -521,7 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply:
             with _writer_lock(root):
                 try:
-                    report = synchronize(args.index, args.checkouts_root, apply=True, publish=args.publish)
+                    report = synchronize(args.index, args.checkouts_root, apply=True, publish=args.publish,
+                                         clone=args.clone_missing)
                 except (SyncError, OSError, ValueError, KeyError, TypeError) as exc:
                     report = {'schema': SCHEMA, 'status': 'blocked', 'blocked_targets': 1,
                               'code': exc.code if isinstance(exc, SyncError) else 'invalid_input_or_environment'}
@@ -531,7 +545,8 @@ def main(argv: list[str] | None = None) -> int:
                     raise SyncError('unsafe_runtime_path')
                 _atomic(target, json_text(report).encode())
         else:
-            report = synchronize(args.index, args.checkouts_root, apply=False, publish=False)
+            report = synchronize(args.index, args.checkouts_root, apply=False, publish=False,
+                                 clone=args.clone_missing)
         print(json.dumps(report, ensure_ascii=False))
         return 2 if report['blocked_targets'] else 1 if args.check and report['changed_targets'] else 0
     except (SyncError, OSError, ValueError, KeyError, TypeError) as exc:

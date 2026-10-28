@@ -1,0 +1,68 @@
+# Daily organization hub registry sync (docs/operations/org-hub-registry-sync.md).
+# Public repository: GitHub-hosted runner. Every run starts empty: it clones the umbrella and
+# the hubs, then commits and pushes only the configured projection files.
+# ORG_HUB_SYNC_TOKEN (environment org-hub-sync, main only) is a classic token of the owner
+# account from Infisical /github; it needs repo + read:org (fine-grained tokens cover one owner
+# only). The job prints per-target statuses, never the report file.
+name: Org hub sync
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # 09:00 Asia/Bangkok
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: org-hub-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'bookchaowalit/platform-ops-cli' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: org-hub-sync
+    env:
+      GH_TOKEN: ${{ secrets.ORG_HUB_SYNC_TOKEN }}
+      GIT_TERMINAL_PROMPT: "0"
+      GH_PROMPT_DISABLED: "1"
+      TZ: Asia/Bangkok
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Git credentials and identity
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::ORG_HUB_SYNC_TOKEN is not set"; exit 1; }
+          gh auth setup-git
+          git config --global user.name "bookchaowalit-org-hub-sync"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Clone umbrella
+        run: |
+          mkdir -p "$RUNNER_TEMP/hubs"
+          git clone --quiet https://github.com/bookchaowalit/bookchaowalit-empire.git \
+            "$RUNNER_TEMP/hubs/bookchaowalit-empire"
+
+      - name: Sync hubs
+        run: |
+          set +e
+          python3 infra/scripts/sync/org_hub_registry.py \
+            --index "$RUNNER_TEMP/hubs/bookchaowalit-empire/registry/hubs.json" \
+            --checkouts-root "$RUNNER_TEMP/hubs" --clone-missing --apply --publish \
+            > "$RUNNER_TEMP/report.json"
+          code=$?
+          set -e
+          python3 - "$RUNNER_TEMP/report.json" <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          report = json.load(open(sys.argv[1]))
+          print(f"status: {report['status']}, changed: {report.get('changed_targets', 0)}, "
+                f"blocked: {report['blocked_targets']}" + (f", code: {report['code']}" if 'code' in report else ''))
+          print()
+          for row in report.get('results', []):
+              print(f"- {row['repository']}: {row['status']}" + (f" ({row['code']})" if 'code' in row else ''))
+          EOF
+          exit "$code"

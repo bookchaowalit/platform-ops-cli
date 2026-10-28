@@ -47,25 +47,50 @@ Worker อ่านเฉพาะ GitHub repository metadata และไฟล
 ตรวจ owner, URL, path, symlink และ marker ก่อนเขียน ไม่อ่านเนื้อหา product หรือ
 เอกสารลูกค้า และไม่รวบรวม product records มาเก็บใน umbrella
 
-## ตัวตั้งเวลาในเครื่อง
+## ตัวตั้งเวลาแบบ hosted
+
+ตั้งแต่ 2026-10-28 งานประจำวันรันบน GitHub Actions ของ repo นี้ (public จึงใช้
+GitHub-hosted runner) workflow `.github/workflows/org-hub-sync.yml` ชื่อ
+**Org hub sync** เวลา **09:00 ทุกวัน Asia/Bangkok** (`0 2 * * *` UTC) และกดรันเองได้
 
 ```bash
-task hubs:timer -- --index /home/bookchaowalit/bookchaowalit-empire/registry/hubs.json --checkouts-root /home/bookchaowalit --activate
+gh workflow run org-hub-sync.yml --repo bookchaowalit/platform-ops-cli
+gh run list --workflow org-hub-sync.yml --repo bookchaowalit/platform-ops-cli --limit 5
+```
+
+แต่ละ run เริ่มจากเครื่องว่าง: clone `bookchaowalit-empire` เข้า `$RUNNER_TEMP/hubs`
+แล้วรัน worker ด้วย `--clone-missing --apply --publish` worker จะ clone hub ที่ยังไม่มี
+checkout (default branch, single branch) ก่อนตรวจตามกฎเดิมทุกข้อ ไม่แตะ checkout ที่มีอยู่แล้ว
+
+Credential คือ environment secret `ORG_HUB_SYNC_TOKEN` ใน environment `org-hub-sync`
+(อนุญาตเฉพาะ branch `main`) ตั้งจาก Infisical `/github` ด้วย stdin โดยไม่พิมพ์ค่า
+ต้องเป็น classic token ของบัญชีเจ้าของ (worker ตรวจ `/user` ว่าเป็น `bookchaowalit`)
+ที่มี `repo` และ `read:org` เพราะ fine-grained token ครอบได้ owner เดียว ส่วน Org
+อื่นที่บัญชีเป็นสมาชิก เช่น Happy-Teeth อยู่นอกทะเบียนและ worker ไม่แตะ
+
+```bash
+source ~/.config/solo-empire/environment.sh
+infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /github --silent -- \
+  bash -c 'printf %s "$GITHUB_PERSONAL_ACCESS_TOKEN" | gh secret set ORG_HUB_SYNC_TOKEN --env org-hub-sync --repo bookchaowalit/platform-ops-cli'
+```
+
+Log ของ run แสดงเฉพาะสถานะต่อ target (`unchanged`, `updated` หรือ `blocked` พร้อม code)
+และ job ล้มเมื่อมี target ที่ blocked ซึ่ง GitHub แจ้งเจ้าของทางอีเมล รายงานเต็ม
+ไม่ถูกเผยแพร่เพราะ repo นี้ public Commit ใช้ชื่อ `bookchaowalit-org-hub-sync`
+
+## ตัวตั้งเวลาในเครื่อง (ปิดแล้ว)
+
+User systemd timer `bookchaowalit-org-hub-sync.timer` เดิมถูกปิดหลัง hosted run แรก
+ผ่าน `task hubs:timer` ยังใช้ติดตั้งใหม่ได้ในกรณีฉุกเฉิน แต่ห้ามเปิดคู่กับ workflow
+เพราะ lock ป้องกัน writer ซ้อนได้เฉพาะในเครื่องเดียวกัน
+
+```bash
 systemctl --user list-timers bookchaowalit-org-hub-sync.timer
-systemctl --user start bookchaowalit-org-hub-sync.service
-systemctl --user status bookchaowalit-org-hub-sync.service
 journalctl --user -u bookchaowalit-org-hub-sync.service -n 20 --no-pager
 ```
 
-Installer จะตรวจ live `--check` ว่าครบทุก hub และไม่มี drift ก่อนเปิด timer
-ชื่อ `bookchaowalit-org-hub-sync.timer` เวลา **09:00 ทุกวัน Asia/Bangkok**
-เป็น user systemd service บนเครื่องที่ติดตั้ง ใช้ GitHub session ของ user นั้น
-เครื่องต้องเปิดและ user service manager ต้องทำงาน หากพลาดเวลา `Persistent=true`
-จะรันชดเชยเมื่อ timer กลับมาทำงาน Run ที่ข้อมูลไม่เปลี่ยนจะไม่ส่งการแจ้งเตือน
-หรือสร้าง Git commit ใช้ local journal และ runtime report สำหรับตรวจสถานะ
-
-สถานะครั้งล่าสุดอยู่ที่ `.runtime/org-hub-sync.json` ใน umbrella ซึ่งถูก Git ignore
-ไม่มี token หรือเนื้อหาเอกสารอยู่ในรายงาน Lock ในที่เดียวกันป้องกัน writer ซ้อนกัน
+สถานะของ run ในเครื่องอยู่ที่ `.runtime/org-hub-sync.json` ใน umbrella ซึ่งถูก Git ignore
+ไม่มี token หรือเนื้อหาเอกสารอยู่ในรายงาน
 
 ## เมื่อมีงานค้างหรือ publish ไม่ผ่าน
 
@@ -78,5 +103,5 @@ fast-forward ได้ใน apply mode ส่วน unpushed/diverged commits �
 เมื่อต้องหยุดงานอัตโนมัติ:
 
 ```bash
-systemctl --user disable --now bookchaowalit-org-hub-sync.timer
+gh workflow disable org-hub-sync.yml --repo bookchaowalit/platform-ops-cli
 ```
