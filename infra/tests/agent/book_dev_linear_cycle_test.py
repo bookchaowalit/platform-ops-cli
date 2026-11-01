@@ -120,6 +120,18 @@ def main() -> int:
                 report = cycle.run_cycle(dry_run=False, **common)
             assert report["issue"] == "BOO-3", report
 
+        # The default timer flow: Claude builds, Codex reviews, rendered as a dry run.
+        with mock.patch.object(cycle, "call_linear", return_value=payload), mock.patch(
+            "book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]
+        ), mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
+            report = cycle.run_cycle(
+                dry_run=True, reviewer=cycle.DEFAULT_REVIEWER, **{**common, "state_dir": tmp / "state-review"}
+            )
+        assert report["reviewer"] == "codex" and report["dispatch_status"] == "dry_run", report
+        ticket = json.loads((tmp / "out" / "execution" / "current.json").read_text(encoding="utf-8"))
+        dispatch_report = json.loads(Path(ticket["dispatch"]["report"]).read_text(encoding="utf-8"))
+        assert dispatch_report["flow"]["builder"] == "claude" and dispatch_report["flow"]["reviewer"] == "codex"
+
         # A missing CLI does not consume the issue.
         with mock.patch.object(cycle, "call_linear", return_value=payload), mock.patch(
             "book_dev_ai_dispatch.resolve_claude_cmd", return_value=None

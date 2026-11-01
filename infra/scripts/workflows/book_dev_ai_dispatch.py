@@ -14,6 +14,7 @@ Usage:
     python3 book_dev_ai_dispatch.py --ticket data/runtime/agent-loop/book-dev/execution/current.json
     python3 book_dev_ai_dispatch.py --providers grok --mode plan --max-turns 4
     python3 book_dev_ai_dispatch.py --providers claude --mode plan
+    python3 book_dev_ai_dispatch.py --providers claude --reviewer codex
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,6 +50,9 @@ CLAUDE_PLAN_TOOLS = "Read,Grep,Glob"
 CLAUDE_CLI_ENV = "BOOK_DEV_CLAUDE_CLI"
 SKILL_FILE = SKILLS_ROOT / "book-dev-engineering-loop" / "SKILL.md"
 MODES = {"plan", "implement"}
+SUPPORTED_REVIEWERS = {"codex"}
+MAX_FIX_ROUNDS = 2
+VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)
 
 
 def _clean(value: Any, limit: int = 500) -> str:
@@ -177,7 +182,7 @@ def parse_providers(raw: str) -> list[str]:
     return ordered
 
 
-def build_prompt(ticket: dict[str, Any], *, mode: str) -> str:
+def build_prompt(ticket: dict[str, Any], *, mode: str, branch: str | None = None) -> str:
     selected = ticket.get("selected") or {}
     task = selected.get("task") or {}
     repo = selected.get("repository") or {}
@@ -193,6 +198,15 @@ def build_prompt(ticket: dict[str, Any], *, mode: str) -> str:
         if mode == "plan"
         else "Mode: IMPLEMENT. You may edit files inside the selected nested repository only."
     )
+    if branch:
+        release = f"""- You are in a dedicated worktree on branch `{branch}`. After verification,
+    commit only scoped files on this branch. Do not push, deploy, switch
+    branches or open PRs: the dispatcher sends your commits to an independent
+    reviewer and opens the pull request; the owner approves merge and deploy."""
+    else:
+        release = """- After verification, follow the automatic release closeout in the skill:
+    commit only scoped files, push the configured upstream, deploy only through
+    the repository's documented target, and run its post-deploy check."""
     return f"""You are the Book Dev engineering-loop dispatcher target.
 
 {mode_line}
@@ -203,9 +217,7 @@ Hard stop rules (non-negotiable):
 - Read {markdown}.
 - Stay inside the selected nested repository only.
 - Preserve unrelated dirty work. Never git reset/clean.
-- After verification, follow the automatic release closeout in the skill:
-    commit only scoped files, push the configured upstream, deploy only through
-    the repository's documented target, and run its post-deploy check.
+{release}
 - Never merge, tag, archive, transfer, delete, force-push, open PRs, spend
     money, send external messages, or change production without the required
     approval. Do not guess a deployment target or command.
@@ -334,9 +346,11 @@ def run_provider(
     dry_run: bool,
     dispatch_dir: Path,
     cwd: Path = PROJECT_ROOT,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    log_path = dispatch_dir / f"{provider}.log"
-    last_message_path = dispatch_dir / f"{provider}.last-message.md"
+    name = label or provider
+    log_path = dispatch_dir / f"{name}.log"
+    last_message_path = dispatch_dir / f"{name}.last-message.md"
     result: dict[str, Any] = {
         "provider": provider,
         "status": "pending",
@@ -415,6 +429,197 @@ def run_provider(
     return result
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False, timeout=120
+    )
+
+
+def _branch_name(ticket: dict[str, Any], stamp: str) -> str:
+    task_id = str(((ticket.get("selected") or {}).get("task") or {}).get("id") or "task")
+    slug = re.sub(r"[^a-z0-9]+", "-", task_id.lower()).strip("-") or "task"
+    return f"ai/{slug}-{stamp.lower()}"
+
+
+def build_review_prompt(ticket: dict[str, Any], *, base: str, branch: str) -> str:
+    task = ((ticket.get("selected") or {}).get("task") or {})
+    return f"""You are the independent reviewer for a change another model wrote.
+Do not edit files, commit, push or run anything that changes state.
+
+Task: {_clean(task.get('title'), 200)}
+Acceptance: {_clean(task.get('description'), 1200)}
+Review the commits on branch `{branch}`: run `git log --oneline {base}..HEAD`
+and `git diff {base}..HEAD`.
+
+Report each finding with severity (blocking or non-blocking), file:line,
+evidence and a suggested fix. Blocking means a correctness, security, data-loss
+or acceptance-criteria failure; style alone is non-blocking.
+End with exactly one line: `VERDICT: PASS` (no blocking findings) or
+`VERDICT: BLOCKING`.
+"""
+
+
+def build_fix_prompt(base_prompt: str, review: str, round_no: int) -> str:
+    return f"""{base_prompt}
+
+Fix round {round_no}: an independent reviewer found blocking issues in your
+commits. Fix only the blocking findings below (verify each against the code
+first), re-run the checks, and commit the fix on the same branch. If a finding
+is wrong, say why in your report instead of changing code.
+
+Reviewer report:
+{review}
+"""
+
+
+def parse_verdict(text: str) -> str:
+    matches = VERDICT_RE.findall(text or "")
+    return matches[-1].lower() if matches else "unknown"
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+
+def open_pull_request(
+    worktree: Path, *, branch: str, base_branch: str, title: str, body: str
+) -> dict[str, Any]:
+    push = _git(worktree, "push", "-u", "origin", branch)
+    if push.returncode != 0:
+        return {"status": "push_failed", "error": _clean(push.stderr, 400)}
+    gh = shutil.which("gh")
+    if not gh:
+        return {"status": "pr_failed", "error": "gh CLI not found; branch was pushed"}
+    created = subprocess.run(
+        [gh, "pr", "create", "--base", base_branch, "--head", branch, "--title", title, "--body", body],
+        cwd=str(worktree), capture_output=True, text=True, check=False, timeout=120,
+    )
+    if created.returncode != 0:
+        return {"status": "pr_failed", "error": _clean(created.stderr, 400)}
+    return {"status": "opened", "url": created.stdout.strip().splitlines()[-1] if created.stdout.strip() else None}
+
+
+def build_review(
+    *,
+    ticket: dict[str, Any],
+    builder: str,
+    reviewer: str,
+    repo_dir: Path,
+    dispatch_dir: Path,
+    stamp: str,
+    max_turns: int,
+    timeout_sec: int,
+    dry_run: bool,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Builder commits in a worktree, reviewer gates it, a passing branch becomes a PR."""
+
+    branch = _branch_name(ticket, stamp)
+    base_branch = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
+    base = _git(repo_dir, "rev-parse", "--verify", "-q", "HEAD").stdout.strip()
+    worktree = dispatch_dir.parent.parent / "worktrees" / f"{repo_dir.name}-{stamp}"
+    flow: dict[str, Any] = {
+        "name": "build-review",
+        "builder": builder,
+        "reviewer": reviewer,
+        "branch": branch,
+        "base_branch": base_branch,
+        "base": base,
+        "worktree": _path_label(worktree),
+        "max_fix_rounds": MAX_FIX_ROUNDS,
+        "reviews": [],
+        "pull_request": None,
+    }
+    prompt = build_prompt(ticket, mode="implement", branch=branch)
+    prompt_file = write_prompt_file(prompt, dispatch_dir)
+    common = dict(max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=dispatch_dir)
+    results: list[dict[str, Any]] = []
+
+    if dry_run:
+        for provider, mode, label in ((builder, "implement", f"{builder}-build"), (reviewer, "plan", f"{reviewer}-review")):
+            results.append(run_provider(
+                provider, prompt=prompt, prompt_file=prompt_file, mode=mode, dry_run=True,
+                cwd=repo_dir, label=label, **common,
+            ))
+        statuses = {item["status"] for item in results}
+        return ("dry_run" if statuses == {"dry_run"} else "unavailable"), results, flow
+
+    if not base:
+        return "failed", results, {**flow, "error": "repository has no HEAD commit"}
+    availability = provider_availability()
+    missing = [name for name in (builder, reviewer) if not availability[name]["available"]]
+    if missing:
+        # Check before creating the worktree so a missing CLI leaves nothing behind.
+        return "unavailable", results, {**flow, "error": f"CLI not found: {', '.join(missing)}"}
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    added = _git(repo_dir, "worktree", "add", "-b", branch, str(worktree), base)
+    if added.returncode != 0:
+        return "failed", results, {**flow, "error": _clean(added.stderr, 400)}
+
+    def build(round_no: int, review: str | None) -> dict[str, Any]:
+        text = prompt if review is None else build_fix_prompt(prompt, review, round_no)
+        label = f"{builder}-build" if review is None else f"{builder}-fix-{round_no}"
+        result = run_provider(
+            builder, prompt=text, prompt_file=prompt_file, mode="implement", dry_run=False,
+            cwd=worktree, label=label, **common,
+        )
+        results.append(result)
+        return result
+
+    def discard() -> None:
+        _git(repo_dir, "worktree", "remove", "--force", str(worktree))
+        _git(repo_dir, "branch", "-D", branch)
+
+    result = build(0, None)
+    if result["status"] != "dispatched":
+        discard()
+        return result["status"], results, flow
+    if not _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip():
+        discard()
+        return "no_changes", results, flow
+
+    review_prompt = build_review_prompt(ticket, base=base, branch=branch)
+    for round_no in range(MAX_FIX_ROUNDS + 1):
+        review = run_provider(
+            reviewer, prompt=review_prompt, prompt_file=prompt_file, mode="plan", dry_run=False,
+            cwd=worktree, label=f"{reviewer}-review-{round_no}", **common,
+        )
+        results.append(review)
+        if review["status"] != "dispatched":
+            return review["status"], results, flow
+        text = _read(PROJECT_ROOT / review["last_message"])
+        verdict = parse_verdict(text)
+        flow["reviews"].append({
+            "round": round_no,
+            "head": _git(worktree, "rev-parse", "HEAD").stdout.strip(),
+            "verdict": verdict,
+            "report": review["last_message"],
+        })
+        if verdict == "pass":
+            break
+        if round_no == MAX_FIX_ROUNDS:
+            # Two fix attempts did not clear the reviewer: escalate to the owner.
+            return "review_blocked", results, flow
+        if build(round_no + 1, text)["status"] != "dispatched":
+            return results[-1]["status"], results, flow
+
+    task = ((ticket.get("selected") or {}).get("task") or {})
+    title = _clean(task.get("title"), 120) or branch
+    body = (
+        f"Built by `{builder}` and reviewed read-only by `{reviewer}` "
+        f"({len(flow['reviews'])} review round(s), final verdict PASS).\n\n"
+        f"Ticket: {task.get('id')}\n\n"
+        "Merge and deploy need owner approval after CI passes.\n\n"
+        "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+    )
+    flow["pull_request"] = open_pull_request(
+        worktree, branch=branch, base_branch=base_branch, title=title, body=body
+    )
+    if flow["pull_request"]["status"] != "opened":
+        return "failed", results, flow
+    _git(repo_dir, "worktree", "remove", str(worktree))
+    return "dispatched", results, flow
+
+
 def update_ticket_dispatch(
     ticket_path: Path,
     ticket: dict[str, Any],
@@ -454,6 +659,7 @@ def dispatch(
     timeout_sec: int = 1800,
     dry_run: bool = False,
     write_ticket: bool = True,
+    reviewer: str | None = None,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}")
@@ -463,6 +669,13 @@ def dispatch(
         raise ValueError("timeout_sec must be between 30 and 7200")
 
     selected_providers = providers or list(DEFAULT_PROVIDERS)
+    if reviewer:
+        if reviewer not in SUPPORTED_REVIEWERS:
+            raise ValueError(f"unsupported reviewer: {reviewer}")
+        if mode != "implement" or len(selected_providers) != 1:
+            raise ValueError("build-review flow needs implement mode and exactly one builder")
+        if selected_providers[0] == reviewer:
+            raise ValueError("builder and reviewer must be different providers")
     ticket = load_ticket(ticket_path)
     if not ticket.get("selected"):
         raise ValueError("execution ticket has no selected candidate to dispatch")
@@ -470,6 +683,18 @@ def dispatch(
 
     stamp = _now_stamp()
     dispatch_dir = ticket_path.parent / "dispatch" / stamp
+    if reviewer:
+        dispatch_dir.mkdir(parents=True, exist_ok=True)
+        overall, results, flow = build_review(
+            ticket=ticket, builder=selected_providers[0], reviewer=reviewer, repo_dir=repo_dir,
+            dispatch_dir=dispatch_dir, stamp=stamp, max_turns=max_turns,
+            timeout_sec=timeout_sec, dry_run=dry_run,
+        )
+        return _finish_report(
+            ticket_path, ticket, dispatch_dir, mode=mode, providers=selected_providers,
+            overall=overall, results=results, max_turns=max_turns, timeout_sec=timeout_sec,
+            write_ticket=write_ticket, flow=flow,
+        )
     prompt = build_prompt(ticket, mode=mode)
     prompt_file = write_prompt_file(prompt, dispatch_dir)
 
@@ -503,16 +728,38 @@ def dispatch(
     else:
         overall = "failed"
 
+    return _finish_report(
+        ticket_path, ticket, dispatch_dir, mode=mode, providers=selected_providers,
+        overall=overall, results=results, max_turns=max_turns, timeout_sec=timeout_sec,
+        write_ticket=write_ticket,
+    )
+
+
+def _finish_report(
+    ticket_path: Path,
+    ticket: dict[str, Any],
+    dispatch_dir: Path,
+    *,
+    mode: str,
+    providers: list[str],
+    overall: str,
+    results: list[dict[str, Any]],
+    max_turns: int,
+    timeout_sec: int,
+    write_ticket: bool,
+    flow: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prompt_file = dispatch_dir / "prompt.md"
     report = {
         "contract": CONTRACT,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
-        "providers": selected_providers,
+        "providers": providers,
         "status": overall,
         "ticket": _path_label(ticket_path),
         "availability": provider_availability(),
         "policy": {
-            "automatic_release_closeout": True,
+            "automatic_release_closeout": flow is None,
             "automatic_merge": False,
             "danger_bypass": False,
             "always_approve": False,
@@ -528,16 +775,19 @@ def dispatch(
         "next_action": (
             "Review provider logs under the dispatch directory and inspect the nested-repo "
             "commit/push/deploy evidence; stop on a protected release gate."
+            if flow is None
+            else "Owner: check CI on the pull request, then approve merge and deploy; "
+            "on review_blocked, read the review reports and decide."
         ),
     }
+    if flow is not None:
+        report["flow"] = flow
     (dispatch_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    if write_ticket and not dry_run:
-        update_ticket_dispatch(ticket_path, ticket, report)
-    elif write_ticket and dry_run:
-        # Keep ticket status, but record the dry-run metadata.
+    if write_ticket:
+        # A dry run keeps the ticket status but records the metadata.
         update_ticket_dispatch(ticket_path, ticket, report)
     return report
 
@@ -551,6 +801,11 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated providers: grok,codex,claude",
     )
     parser.add_argument("--mode", choices=sorted(MODES), default="implement")
+    parser.add_argument(
+        "--reviewer",
+        choices=sorted(SUPPORTED_REVIEWERS),
+        help="Build-review flow: worktree branch, read-only review, then a pull request",
+    )
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--timeout-sec", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true")
@@ -574,6 +829,7 @@ def main() -> int:
             timeout_sec=args.timeout_sec,
             dry_run=args.dry_run,
             write_ticket=not args.no_write_ticket,
+            reviewer=args.reviewer,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         payload = {"contract": CONTRACT, "status": "error", "error": str(exc)}

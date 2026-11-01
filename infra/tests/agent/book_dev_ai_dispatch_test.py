@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -16,6 +17,7 @@ from book_dev_ai_dispatch import (  # noqa: E402
     build_provider_command,
     dispatch,
     parse_providers,
+    parse_verdict,
     provider_availability,
     resolve_claude_cmd,
     resolve_repo_dir,
@@ -55,6 +57,116 @@ def sample_ticket(tmp: Path) -> Path:
     path.write_text(json.dumps(ticket), encoding="utf-8")
     (tmp / "current.md").write_text("# ticket\n", encoding="utf-8")
     return path
+
+
+def git_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "t"],
+        ["commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True)
+
+
+def fake_provider(verdicts: list[str], *, commit: bool = True):
+    """Builder rounds commit a file; review rounds write the next verdict."""
+
+    calls: list[dict] = []
+
+    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
+        calls.append({"provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt})
+        last = dispatch_dir / f"{label}.last-message.md"
+        if mode == "implement" and commit:
+            (cwd / f"{label}.txt").write_text(label)
+            subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(cwd), "commit", "-q", "-m", label], check=True)
+        if mode == "plan":
+            last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
+        return {"provider": provider, "status": "dispatched", "last_message": str(last)}
+
+    return run, calls
+
+
+def build_review_tests(tmp: Path) -> None:
+    assert parse_verdict("x\nVERDICT: PASS") == "pass"
+    assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
+    assert parse_verdict("VERDICT: PASS\nlater\nVERDICT: BLOCKING") == "blocking"
+    assert parse_verdict("no verdict") == "unknown"
+
+    ticket_path = sample_ticket(tmp)
+    repo = tmp / "repo"
+    (repo / ".git").rmdir()
+    git_repo(repo)
+    common = dict(ticket_path=ticket_path, providers=["claude"], mode="implement", write_ticket=False, reviewer="codex")
+
+    for bad in (dict(providers=["claude", "grok"]), dict(mode="plan"), dict(providers=["codex"]), dict(reviewer="grok")):
+        try:
+            dispatch(**{**common, **bad})
+            raise AssertionError(f"expected rejection: {bad}")
+        except ValueError:
+            pass
+
+    # Runs within one second would share a stamp, so each dispatch gets its own.
+    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261101T00000{i}Z" for i in range(9)])
+    with stamps, mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), mock.patch(
+        "book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]
+    ):
+        report = dispatch(**common, dry_run=True)
+        assert report["status"] == "dry_run", report
+        assert [item["provider"] for item in report["results"]] == ["claude", "codex"]
+        review_cmd = report["results"][1]["command"]
+        assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
+        assert report["policy"]["automatic_release_closeout"] is False
+        assert report["flow"]["branch"].startswith("ai/2135-")
+
+        # Blocking once, then pass: one fix round, then a PR from the branch.
+        run, calls = fake_provider(["BLOCKING", "PASS"])
+        opened = {"status": "opened", "url": "https://github.com/o/r/pull/1"}
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ) as pr:
+            report = dispatch(**common)
+        assert report["status"] == "dispatched", report
+        assert [c["label"] for c in calls] == ["claude-build", "codex-review-0", "claude-fix-1", "codex-review-1"]
+        assert calls[1]["mode"] == "plan" and "VERDICT" in calls[1]["prompt"]
+        assert "do not push" in calls[0]["prompt"].lower() and "Fix round 1" in calls[2]["prompt"]
+        worktree = calls[0]["cwd"]
+        assert worktree != repo.resolve() and not worktree.exists(), "worktree removed after the PR"
+        assert [r["verdict"] for r in report["flow"]["reviews"]] == ["blocking", "pass"]
+        branch = report["flow"]["branch"]
+        assert pr.call_args.kwargs["branch"] == branch and pr.call_args.kwargs["base_branch"] == "main"
+        log = subprocess.run(["git", "-C", str(repo), "log", "--format=%s", branch], capture_output=True, text=True).stdout
+        assert log.split() == ["claude-fix-1", "claude-build", "init"]
+        assert subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                              capture_output=True, text=True).stdout.strip() == "main"
+
+        # Still blocking after MAX_FIX_ROUNDS: escalate, keep the worktree, open no PR.
+        run, calls = fake_provider(["BLOCKING"] * 3)
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request"
+        ) as pr:
+            report = dispatch(**common)
+        assert report["status"] == "review_blocked", report
+        assert len(report["flow"]["reviews"]) == 3
+        pr.assert_not_called()
+        assert calls[0]["cwd"].exists()
+
+        # No commits: nothing to review, worktree and branch discarded.
+        run, calls = fake_provider([], commit=False)
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run):
+            report = dispatch(**common)
+        assert report["status"] == "no_changes", report
+        assert [c["label"] for c in calls] == ["claude-build"] and not calls[0]["cwd"].exists()
+
+    # A missing reviewer CLI is reported before any worktree exists.
+    with mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), mock.patch(
+        "book_dev_ai_dispatch.resolve_codex_cmd", return_value=None
+    ):
+        report = dispatch(**common)
+    assert report["status"] == "unavailable", report
+    assert not Path(report["flow"]["worktree"]).exists()
 
 
 def main() -> int:
@@ -185,6 +297,9 @@ def main() -> int:
             assert resolve_claude_cmd() == [str(builds / "2.1.9-aaa")]
             os.environ["BOOK_DEV_CLAUDE_CLI"] = str(home / "missing")
             assert resolve_claude_cmd() is None
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        build_review_tests(Path(temp_dir))
 
     print("Book Dev AI dispatch tests passed")
     return 0

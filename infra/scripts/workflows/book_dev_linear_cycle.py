@@ -8,7 +8,9 @@ One cycle:
        cycle, and issues whose ``[repository]`` title prefix does not match
        exactly one local checkout;
     3. write the loop handoff and queue the first issue as the execution ticket;
-    4. dispatch that ticket to the configured providers (default: claude).
+    4. dispatch that ticket: by default Claude builds on a worktree branch,
+       Codex reviews it read-only, and a passing branch becomes a pull request
+       (set ``BOOK_DEV_DISPATCH_REVIEWER=none`` for the single-provider flow).
 
 Linear is only read. The cycle never creates, moves, or comments on issues, and
 dispatches at most one ticket per run. The ledger in ``state.json`` stops the
@@ -56,6 +58,7 @@ CONTRACT = "solo-empire.book-dev-linear-cycle.v1"
 DEFAULT_LABEL = "ai-dispatch"
 DEFAULT_HOLD_LABELS = ("รอเจ้าของ", "ติดเงื่อนไข")
 DEFAULT_PROVIDERS = "claude"
+DEFAULT_REVIEWER = "codex"
 STATE_DIR = DEFAULT_OUTPUT_DIR / "linear"
 TITLE_REPO_RE = re.compile(r"^\s*\[([A-Za-z0-9._-]+)\]\s*(.*)$")
 MAX_ISSUES = 50
@@ -229,6 +232,7 @@ def run_cycle(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     state_dir: Path = STATE_DIR,
     token: str | None = None,
+    reviewer: str | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "contract": CONTRACT,
@@ -236,6 +240,7 @@ def run_cycle(
         "label": label,
         "mode": mode,
         "providers": providers,
+        "reviewer": reviewer,
         "dry_run": dry_run,
     }
     token = token if token is not None else get_env("LINEAR_API_KEY")
@@ -277,6 +282,7 @@ def run_cycle(
         dispatch_mode=mode,
         dispatch_max_turns=max_turns,
         dispatch_timeout_sec=timeout_sec,
+        dispatch_reviewer=reviewer,
         hook_dry_run=dry_run,
         report=handoff,
     )
@@ -321,6 +327,12 @@ def parse_args() -> argparse.Namespace:
         choices=["plan", "implement"],
         default=os.environ.get("BOOK_DEV_DISPATCH_MODE", "implement"),
     )
+    parser.add_argument(
+        "--reviewer",
+        choices=["codex", "none"],
+        default=os.environ.get("BOOK_DEV_DISPATCH_REVIEWER", DEFAULT_REVIEWER),
+        help="Independent reviewer for the build-review flow; none dispatches one provider",
+    )
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--timeout-sec", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true", help="Queue the ticket and render commands only")
@@ -339,6 +351,8 @@ def main() -> int:
             dry_run=args.dry_run,
             max_turns=args.max_turns,
             timeout_sec=args.timeout_sec,
+            # Plan mode has nothing to review.
+            reviewer=None if args.reviewer == "none" or args.mode == "plan" else args.reviewer,
         )
     except (OSError, ValueError) as exc:
         report = {"contract": CONTRACT, "status": "error", "error": str(exc)}

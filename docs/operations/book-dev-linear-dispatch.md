@@ -9,17 +9,34 @@
 1. อ่าน issue ใน Linear ที่มี label `ai-dispatch` และอยู่ในสถานะ backlog/unstarted (อ่านอย่างเดียว ไม่ย้าย ไม่ comment ไม่สร้าง issue)
 2. ข้าม issue ที่มี label `รอเจ้าของ` หรือ `ติดเงื่อนไข`, issue ที่เคยส่งแล้ว และ issue ที่ชื่อไม่ขึ้นต้นด้วย `[ชื่อ-repo]` ที่ตรงกับ checkout ในเครื่องได้หนึ่งเดียว
 3. เขียน handoff และ execution ticket ลง `data/runtime/agent-loop/book-dev/`
-4. ส่ง ticket แรกตามลำดับ priority ให้ provider (ค่าเริ่มต้น `claude`) โดยรันภายใน repo เป้าหมาย
+4. ส่ง ticket แรกตามลำดับ priority เข้า flow สร้าง–รีวิว (ค่าเริ่มต้น)
 
 ส่งได้ไม่เกินหนึ่ง issue ต่อรอบ ประวัติอยู่ใน `data/runtime/agent-loop/book-dev/linear/state.json`
 ถ้าหา CLI ไม่เจอ issue จะไม่ถูกนับว่าส่งแล้ว ถ้ารันแล้วล้มจะลองใหม่ได้ 3 ครั้ง ลบรายการใน `dispatched` เพื่อให้ส่ง issue นั้นใหม่
 
-Prompt ของ dispatcher ทำตาม `book-dev-engineering-loop` skill: หลังตรวจผ่านจะ commit, push และ deploy ตามเป้าหมายที่ repo ระบุไว้
-แต่ไม่ merge, ไม่ force-push และหยุดก่อนงาน production หรืองานที่ลบข้อมูล ติด label `ai-dispatch` เฉพาะ issue ที่พร้อมให้ AI ทำเองได้
+## Flow สร้าง–รีวิว (Claude สร้าง → Codex รีวิว → PR)
+
+| ขั้น | ใครทำ | พื้นที่ทำงาน | ผลลัพธ์ |
+|---|---|---|---|
+| 1. สร้าง | Claude Code (`claude -p`, acceptEdits, tool allowlist) | worktree ใหม่ `data/runtime/agent-loop/book-dev/execution/worktrees/<repo>-<stamp>` บน branch `ai/<issue>-<stamp>` แตกจาก HEAD ของ checkout | commit บน branch (ห้าม push/deploy/เปิด PR เอง) |
+| 2. รีวิว | Codex (`codex exec --sandbox read-only`) | worktree เดิม อ่านอย่างเดียว | รายงาน finding + บรรทัด `VERDICT: PASS` หรือ `VERDICT: BLOCKING` |
+| 3. แก้ | Claude Code | worktree เดิม | commit แก้เฉพาะข้อ blocking สูงสุด 2 รอบ แต่ละรอบ Codex รีวิวใหม่ |
+| 4. เปิด PR | dispatcher | push branch แล้ว `gh pr create` | PR ไปยัง branch ที่ checkout อยู่ (ปกติ `main`) แล้วลบ worktree |
+| 5. CI | GitHub Actions ของ repo | PR | CI ต้องผ่าน |
+| 6. Merge/Deploy | เจ้าของ | – | dispatcher ไม่ merge และไม่ deploy เอง |
+
+ผลลัพธ์ต่อ issue (`status` ใน report): `dispatched` = เปิด PR แล้ว, `review_blocked` = แก้ 2 รอบแล้ว Codex ยังไม่ผ่าน (เก็บ worktree ไว้ให้เจ้าของตัดสิน),
+`no_changes` = Claude ไม่ได้ commit อะไร (ลบ worktree), `failed`/`timeout` = ดู log ใน dispatch directory
+รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)
+
+ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ
+Mode `plan` ไม่ผ่านรีวิวเพราะไม่มีการแก้ไฟล์
+รันมือ: `task book-dev:dispatch:review -- --dry-run`
 
 ## สิ่งที่ต้องเตรียม
 
 - `LINEAR_API_KEY` ใน Infisical path `/linear` (หรือ secret provider ที่ตั้งไว้) สิทธิ์อ่านอย่างเดียวก็พอ
+- Codex CLI ที่ login แล้ว (`codex login status`) สำหรับขั้นรีวิว และ `gh` ที่ login แล้วสำหรับเปิด PR
 - Claude Code ที่ login แบบใช้งานนอกแอปได้ CLI ของ Claude desktop (`~/.claude/remote/ccd-cli/`) ใช้ token ของแอปเองและตอบ `Not logged in` เมื่อรันจาก timer
   ให้ติดตั้ง Claude Code CLI แล้ว login หรือใส่ `CLAUDE_CODE_OAUTH_TOKEN` ใน env file
 - ลำดับการหา CLI: `BOOK_DEV_CLAUDE_CLI`, `PATH`, `~/.local/bin/claude`, `~/.claude/local/claude` แล้วจึงเป็น build ใหม่สุดใน `~/.claude/remote/ccd-cli/`
@@ -30,6 +47,7 @@ Prompt ของ dispatcher ทำตาม `book-dev-engineering-loop` skill: �
 BOOK_DEV_LINEAR_LABEL=ai-dispatch
 BOOK_DEV_LINEAR_HOLD_LABELS=รอเจ้าของ,ติดเงื่อนไข
 BOOK_DEV_DISPATCH_PROVIDERS=claude
+BOOK_DEV_DISPATCH_REVIEWER=codex
 BOOK_DEV_DISPATCH_MODE=implement
 ```
 

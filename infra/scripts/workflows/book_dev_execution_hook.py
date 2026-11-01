@@ -527,8 +527,9 @@ def invoke_builtin_dispatch(
     dry_run: bool = False,
     max_turns: int = 24,
     timeout_sec: int = 1800,
+    reviewer: str | None = None,
 ) -> dict[str, Any]:
-    """Dispatch through the built-in Codex/Grok dispatcher."""
+    """Dispatch through the built-in Codex/Grok/Claude dispatcher."""
 
     from book_dev_ai_dispatch import dispatch, parse_providers  # local import
 
@@ -549,6 +550,7 @@ def invoke_builtin_dispatch(
         timeout_sec=timeout_sec,
         dry_run=dry_run,
         write_ticket=True,
+        reviewer=reviewer,
     )
     return {
         "configured": True,
@@ -573,6 +575,7 @@ def queue_execution(
     dispatch_mode: str = "implement",
     dispatch_max_turns: int = 24,
     dispatch_timeout_sec: int = 1800,
+    dispatch_reviewer: str | None = None,
     generated_at: str | None = None,
     report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -640,6 +643,7 @@ def queue_execution(
                     dry_run=hook_dry_run,
                     max_turns=dispatch_max_turns,
                     timeout_sec=dispatch_timeout_sec,
+                    reviewer=dispatch_reviewer,
                 )
             else:
                 hook_result = invoke_external_hook(ticket, dry_run=hook_dry_run)
@@ -705,6 +709,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dispatch-max-turns", type=int, default=24)
     parser.add_argument("--dispatch-timeout-sec", type=int, default=1800)
+    parser.add_argument(
+        "--dispatch-reviewer",
+        choices=["codex"],
+        help="Build-review flow: the reviewer gates the builder's branch before a PR",
+    )
     parser.add_argument("--latest-json", type=Path, default=DEFAULT_LOOP_DIR / "latest.json")
     parser.add_argument("--execution-dir", type=Path, default=DEFAULT_EXECUTION_DIR)
     return parser.parse_args()
@@ -724,6 +733,7 @@ def main() -> int:
             dispatch_mode=args.dispatch_mode,
             dispatch_max_turns=args.dispatch_max_turns,
             dispatch_timeout_sec=args.dispatch_timeout_sec,
+            dispatch_reviewer=args.dispatch_reviewer,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(

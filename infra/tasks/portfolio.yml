@@ -221,6 +221,12 @@ tasks:
     cmds:
       - bash scripts/setup/run-python3.sh scripts/workflows/book_dev_ai_dispatch.py --providers claude {{.CLI_ARGS}}
 
+  book-dev:dispatch:review:
+    desc: Claude builds on a worktree branch, Codex reviews read-only, a passing branch opens a PR
+    dir: infra
+    cmds:
+      - bash scripts/setup/run-python3.sh scripts/workflows/book_dev_ai_dispatch.py --providers claude --reviewer codex {{.CLI_ARGS}}
+
   book-dev:dispatch:both:
     desc: Dispatch a Book Dev AI workflow to Grok and Codex
     dir: infra
