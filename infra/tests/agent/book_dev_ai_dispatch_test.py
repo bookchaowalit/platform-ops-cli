@@ -17,6 +17,7 @@ from book_dev_ai_dispatch import (  # noqa: E402
     build_provider_command,
     dispatch,
     parse_providers,
+    open_pull_request,
     parse_verdict,
     provider_availability,
     resolve_claude_cmd,
@@ -70,17 +71,26 @@ def git_repo(path: Path) -> None:
         subprocess.run(["git", "-C", str(path), *args], check=True)
 
 
-def fake_provider(verdicts: list[str], *, commit: bool = True):
+def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str, ...] = (), leave_dirty: bool = False):
     """Builder rounds commit a file; review rounds write the next verdict."""
 
     calls: list[dict] = []
 
-    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
-        calls.append({"provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt})
+    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, **_):
+        calls.append({
+            "provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt,
+            "prompt_file": prompt_file.read_text() if prompt_file else None,
+            "detached": subprocess.run(["git", "-C", str(cwd), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0,
+            "head": subprocess.run(["git", "-C", str(cwd), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
+        })
         last = dispatch_dir / f"{label}.last-message.md"
         if mode == "implement" and commit:
+            for name in files:
+                (cwd / name).write_text("x")
+            if leave_dirty:
+                (cwd / "untracked.txt").write_text("not committed")
             (cwd / f"{label}.txt").write_text(label)
-            subprocess.run(["git", "-C", str(cwd), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(cwd), "add", "--", f"{label}.txt", *files], check=True)
             subprocess.run(["git", "-C", str(cwd), "commit", "-q", "-m", label], check=True)
         if mode == "plan":
             last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
@@ -109,7 +119,7 @@ def build_review_tests(tmp: Path) -> None:
             pass
 
     # Runs within one second would share a stamp, so each dispatch gets its own.
-    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261101T00000{i}Z" for i in range(9)])
+    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261101T0000{i:02d}Z" for i in range(20)])
     with stamps, mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), mock.patch(
         "book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]
     ):
@@ -131,6 +141,13 @@ def build_review_tests(tmp: Path) -> None:
         assert report["status"] == "dispatched", report
         assert [c["label"] for c in calls] == ["claude-build", "codex-review-0", "claude-fix-1", "codex-review-1"]
         assert calls[1]["mode"] == "plan" and "VERDICT" in calls[1]["prompt"]
+        # Each review runs in its own detached checkout of the exact commit, removed afterwards.
+        assert calls[1]["detached"] and calls[1]["cwd"] != calls[0]["cwd"] and not calls[1]["cwd"].exists()
+        assert calls[3]["head"] in calls[3]["prompt"] and calls[3]["head"] != calls[1]["head"]
+        assert pr.call_args.kwargs["head"] == calls[3]["head"] == report["flow"]["reviews"][-1]["head"]
+        # The fix round reaches prompt-file providers (Grok) too.
+        assert "Fix round 1" in calls[2]["prompt_file"] and "finding" in calls[2]["prompt_file"]
+        assert report["flow"]["agent_instruction_files"] == []
         assert "do not push" in calls[0]["prompt"].lower() and "Fix round 1" in calls[2]["prompt"]
         assert f"Repository: {calls[0]['cwd']}" in calls[0]["prompt"]
         assert "push the configured upstream" not in calls[0]["prompt"] and "startup" not in calls[0]["prompt"]
@@ -155,6 +172,25 @@ def build_review_tests(tmp: Path) -> None:
         pr.assert_not_called()
         assert calls[0]["cwd"].exists()
 
+        # Commits plus leftover edits: nothing unreviewed reaches a PR.
+        run, calls = fake_provider(["PASS"], leave_dirty=True)
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request"
+        ) as pr:
+            report = dispatch(**common)
+        assert report["status"] == "uncommitted_changes", report
+        assert [c["label"] for c in calls] == ["claude-build"] and report["flow"]["worktree_kept"]
+        pr.assert_not_called()
+
+        # A commit that changes agent instruction files is flagged in the PR body.
+        run, calls = fake_provider(["PASS"], files=("AGENTS.md",))
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ) as pr:
+            report = dispatch(**common)
+        assert report["flow"]["agent_instruction_files"] == ["AGENTS.md"], report
+        assert "AGENTS.md" in pr.call_args.kwargs["body"]
+
         # No commits: nothing to review, worktree and branch discarded.
         run, calls = fake_provider([], commit=False)
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run):
@@ -176,6 +212,18 @@ def build_review_tests(tmp: Path) -> None:
                 report = dispatch(**common)
             assert report["status"] == expected, report
             assert report["flow"]["worktree_kept"] is True and seen[0].exists()
+
+    # The push sends the reviewed commit even when the branch has moved on since.
+    origin = tmp / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    reviewed = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "later"], check=True)
+    with mock.patch("book_dev_ai_dispatch.shutil.which", return_value=None):
+        pushed = open_pull_request(repo, branch="ai/x", base_branch="main", head=reviewed, title="t", body="b")
+    assert pushed["status"] == "pr_failed", pushed
+    remote = subprocess.run(["git", "-C", str(origin), "rev-parse", "refs/heads/ai/x"], capture_output=True, text=True)
+    assert remote.stdout.strip() == reviewed
 
     # A missing reviewer CLI is reported before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), mock.patch(
