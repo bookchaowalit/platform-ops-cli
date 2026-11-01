@@ -554,7 +554,7 @@ def build_review(
     }
     prompt = build_prompt(ticket, mode="implement", branch=branch, worktree=worktree)
     prompt_file = write_prompt_file(prompt, dispatch_dir)
-    common = dict(max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=dispatch_dir)
+    common: dict[str, Any] = dict(max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=dispatch_dir)
     results: list[dict[str, Any]] = []
 
     if dry_run:
