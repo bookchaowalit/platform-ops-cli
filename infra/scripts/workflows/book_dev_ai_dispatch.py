@@ -56,7 +56,7 @@ MAX_FIX_ROUNDS = 2
 # Files an agent CLI may load as instructions. The reviewer runs with project
 # docs disabled; a branch touching any of these still goes to the owner unreviewed.
 AGENT_INSTRUCTION_RE = re.compile(
-    r"(^|/)((AGENTS|CLAUDE|GEMINI)[^/]*\.md$|\.(codex|claude|gemini|cursor)/|\.github/(agents|copilot-instructions))",
+    r"(^|/)((AGENTS|CLAUDE|GEMINI)[^/]*\.md$|\.(agents|codex|claude|gemini|cursor)/|\.github/(agents|copilot-instructions))",
     re.IGNORECASE,
 )
 VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)

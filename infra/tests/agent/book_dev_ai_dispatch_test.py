@@ -106,6 +106,11 @@ def build_review_tests(tmp: Path) -> None:
     assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
     assert parse_verdict("VERDICT: PASS\nlater\nVERDICT: BLOCKING") == "blocking"
     assert parse_verdict("no verdict") == "unknown"
+    from book_dev_ai_dispatch import AGENT_INSTRUCTION_RE
+    for path in ("AGENTS.md", "x/AGENTS.override.md", "CLAUDE.local.md", ".agents/skills/a/SKILL.md", ".codex/config.toml"):
+        assert AGENT_INSTRUCTION_RE.search(path), path
+    for path in ("src/agents.py", "docs/agent.md", "README.md"):
+        assert not AGENT_INSTRUCTION_RE.search(path), path
 
     ticket_path = sample_ticket(tmp)
     repo = tmp / "repo"
