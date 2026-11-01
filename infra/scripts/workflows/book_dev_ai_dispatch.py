@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,9 +53,12 @@ SKILL_FILE = SKILLS_ROOT / "book-dev-engineering-loop" / "SKILL.md"
 MODES = {"plan", "implement"}
 SUPPORTED_REVIEWERS = {"codex"}
 MAX_FIX_ROUNDS = 2
-# Files a reviewer CLI loads as instructions; a builder commit touching them
-# could steer its own review, so such a branch goes to the owner unreviewed.
-AGENT_INSTRUCTION_RE = re.compile(r"(^|/)(AGENTS\.md|CLAUDE\.md|GEMINI\.md|\.codex/|\.claude/|\.github/agents/)")
+# Files an agent CLI may load as instructions. The reviewer runs with project
+# docs disabled; a branch touching any of these still goes to the owner unreviewed.
+AGENT_INSTRUCTION_RE = re.compile(
+    r"(^|/)((AGENTS|CLAUDE|GEMINI)[^/]*\.md$|\.(codex|claude|gemini|cursor)/|\.github/(agents|copilot-instructions))",
+    re.IGNORECASE,
+)
 VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)
 
 
@@ -268,6 +272,7 @@ def build_provider_command(
     cwd: Path,
     last_message_path: Path,
     read_dirs: tuple[Path, ...] = (),
+    isolated_review: bool = False,
 ) -> list[str]:
     if provider == "grok":
         cmd = resolve_grok_cmd()
@@ -295,10 +300,14 @@ def build_provider_command(
         if not cmd:
             raise RuntimeError("codex CLI not found (install CLI or ensure npx is available)")
         sandbox = "read-only" if mode == "plan" else "workspace-write"
+        # An isolated review must not load AGENTS.md (or overrides) from the
+        # builder's commit as its own instructions.
+        isolation = ["-c", "project_doc_max_bytes=0"] if isolated_review else []
         # Feed prompt via stdin for portability across codex versions.
         return [
             *cmd,
             "exec",
+            *isolation,
             "--cd",
             str(cwd),
             "--sandbox",
@@ -358,6 +367,7 @@ def run_provider(
     dispatch_dir: Path,
     cwd: Path = PROJECT_ROOT,
     label: str | None = None,
+    isolated_review: bool = False,
 ) -> dict[str, Any]:
     name = label or provider
     log_path = dispatch_dir / f"{name}.log"
@@ -381,6 +391,7 @@ def run_provider(
             cwd=cwd,
             last_message_path=last_message_path,
             read_dirs=(dispatch_dir.parent.parent, SKILL_FILE.parent),
+            isolated_review=isolated_review,
         )
     except RuntimeError as exc:
         result["status"] = "unavailable"
@@ -550,7 +561,7 @@ def build_review(
         for provider, mode, label in ((builder, "implement", f"{builder}-build"), (reviewer, "plan", f"{reviewer}-review")):
             results.append(run_provider(
                 provider, prompt=prompt, prompt_file=prompt_file, mode=mode, dry_run=True,
-                cwd=repo_dir, label=label, **common,
+                cwd=repo_dir, label=label, isolated_review=mode == "plan", **common,
             ))
         statuses = {item["status"] for item in results}
         return ("dry_run" if statuses == {"dry_run"} else "unavailable"), results, flow
@@ -626,27 +637,37 @@ def build_review(
             # The reviewer would load these as its own instructions: owner reviews by hand.
             flow["worktree_kept"] = True
             return "review_blocked", results, {**flow, "error": "branch changes agent instruction files"}
-        # The reviewer reads a fresh detached checkout of the exact commit, so
-        # nothing the builder left outside Git can reach it.
-        review_tree = worktree.parent / f"{worktree.name}-review-{round_no}"
-        if _git(repo_dir, "worktree", "add", "--detach", str(review_tree), head).returncode != 0:
-            return "failed", results, {**flow, "error": "could not create review checkout"}
+        # The reviewer reads a fresh detached checkout of the exact commit in a
+        # new private temp dir, so nothing the builder left outside Git, or a
+        # file planted where the review output lands, can reach the verdict.
         label = f"{reviewer}-review-{round_no}"
-        (dispatch_dir / f"{label}.last-message.md").unlink(missing_ok=True)
         review_prompt = build_review_prompt(ticket, base=base, head=head, branch=branch)
-        try:
-            review = run_provider(
-                reviewer, prompt=review_prompt,
-                prompt_file=write_prompt_file(review_prompt, dispatch_dir, f"{label}.prompt.md"),
-                mode="plan", dry_run=False, cwd=review_tree, label=label, **common,
-            )
-        finally:
-            _git(repo_dir, "worktree", "remove", "--force", str(review_tree))
+        with tempfile.TemporaryDirectory(prefix="book-dev-review-") as private:
+            review_tree = Path(private) / "checkout"
+            if _git(repo_dir, "worktree", "add", "--detach", str(review_tree), head).returncode != 0:
+                return "failed", results, {**flow, "error": "could not create review checkout"}
+            try:
+                review = run_provider(
+                    reviewer, prompt=review_prompt,
+                    prompt_file=write_prompt_file(review_prompt, Path(private), "prompt.md"),
+                    mode="plan", dry_run=False, cwd=review_tree, label=label,
+                    max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=Path(private),
+                    isolated_review=True,
+                )
+                text = _read(Path(private) / f"{label}.last-message.md")
+            finally:
+                _git(repo_dir, "worktree", "remove", "--force", str(review_tree))
+            # Keep copies in the dispatch directory for the owner.
+            for suffix in ("log", "last-message.md"):
+                source = Path(private) / f"{label}.{suffix}"
+                if source.is_file():
+                    shutil.copyfile(source, dispatch_dir / source.name)
+            review["log"] = _path_label(dispatch_dir / f"{label}.log")
+            review["last_message"] = _path_label(dispatch_dir / f"{label}.last-message.md")
         results.append(review)
         if review["status"] != "dispatched":
             flow["worktree_kept"] = True
             return review["status"], results, flow
-        text = _read(PROJECT_ROOT / review["last_message"])
         verdict = parse_verdict(text)
         flow["reviews"].append({"round": round_no, "head": head, "verdict": verdict, "report": review["last_message"]})
         if verdict == "pass":

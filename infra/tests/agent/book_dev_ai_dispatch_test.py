@@ -76,8 +76,9 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
 
     calls: list[dict] = []
 
-    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, **_):
+    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, isolated_review=False, **_):
         calls.append({
+            "isolated": isolated_review, "dispatch_dir": dispatch_dir,
             "provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt,
             "prompt_file": prompt_file.read_text() if prompt_file else None,
             "detached": subprocess.run(["git", "-C", str(cwd), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0,
@@ -86,6 +87,7 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
         last = dispatch_dir / f"{label}.last-message.md"
         if mode == "implement" and commit:
             for name in files:
+                (cwd / name).parent.mkdir(parents=True, exist_ok=True)
                 (cwd / name).write_text("x")
             if leave_dirty:
                 (cwd / "untracked.txt").write_text("not committed")
@@ -135,6 +137,7 @@ def build_review_tests(tmp: Path) -> None:
         assert [item["provider"] for item in report["results"]] == ["claude", "codex"]
         review_cmd = report["results"][1]["command"]
         assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
+        assert review_cmd[review_cmd.index("-c") + 1] == "project_doc_max_bytes=0"
         assert report["policy"]["automatic_release_closeout"] is False
         assert report["flow"]["branch"].startswith("ai/2135-")
 
@@ -150,6 +153,9 @@ def build_review_tests(tmp: Path) -> None:
         assert calls[1]["mode"] == "plan" and "VERDICT" in calls[1]["prompt"]
         # Each review runs in its own detached checkout of the exact commit, removed afterwards.
         assert calls[1]["detached"] and calls[1]["cwd"] != calls[0]["cwd"] and not calls[1]["cwd"].exists()
+        assert calls[1]["isolated"] and not calls[0]["isolated"]
+        assert calls[0]["cwd"].parent not in calls[1]["cwd"].parents, "review checkout lives outside the builder's dirs"
+        assert Path(report["flow"]["reviews"][0]["report"]).read_text().startswith("finding")
         assert calls[3]["head"] in calls[3]["prompt"] and calls[3]["head"] != calls[1]["head"]
         assert pr.call_args.kwargs["head"] == calls[3]["head"] == report["flow"]["reviews"][-1]["head"]
         # The fix round reaches prompt-file providers (Grok) too.
@@ -191,13 +197,13 @@ def build_review_tests(tmp: Path) -> None:
         pr.assert_not_called()
 
         # A commit that changes instruction files the reviewer loads never reaches the reviewer.
-        run, calls = fake_provider([], files=("AGENTS.md",))
+        run, calls = fake_provider([], files=("AGENTS.override.md", "sub/claude.local.md"))
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
             "book_dev_ai_dispatch.open_pull_request"
         ) as pr:
             report = dispatch(**common)
         assert report["status"] == "review_blocked", report
-        assert report["flow"]["agent_instruction_files"] == ["AGENTS.md"]
+        assert report["flow"]["agent_instruction_files"] == ["AGENTS.override.md", "sub/claude.local.md"]
         assert [c["label"] for c in calls] == ["claude-build"]
         pr.assert_not_called()
 
