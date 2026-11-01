@@ -132,6 +132,8 @@ def build_review_tests(tmp: Path) -> None:
         assert [c["label"] for c in calls] == ["claude-build", "codex-review-0", "claude-fix-1", "codex-review-1"]
         assert calls[1]["mode"] == "plan" and "VERDICT" in calls[1]["prompt"]
         assert "do not push" in calls[0]["prompt"].lower() and "Fix round 1" in calls[2]["prompt"]
+        assert f"Repository: {calls[0]['cwd']}" in calls[0]["prompt"]
+        assert "push the configured upstream" not in calls[0]["prompt"] and "startup" not in calls[0]["prompt"]
         worktree = calls[0]["cwd"]
         assert worktree != repo.resolve() and not worktree.exists(), "worktree removed after the PR"
         assert [r["verdict"] for r in report["flow"]["reviews"]] == ["blocking", "pass"]
@@ -159,6 +161,21 @@ def build_review_tests(tmp: Path) -> None:
             report = dispatch(**common)
         assert report["status"] == "no_changes", report
         assert [c["label"] for c in calls] == ["claude-build"] and not calls[0]["cwd"].exists()
+
+        # Edits left uncommitted, or a failed build with edits, keep the worktree.
+        def edit_only(provider, *, cwd, label=None, dispatch_dir, status="dispatched", **_):
+            (cwd / "wip.txt").write_text("wip")
+            return {"provider": provider, "status": status, "last_message": str(dispatch_dir / f"{label}.md")}
+
+        for status, expected in (("dispatched", "uncommitted_changes"), ("timeout", "timeout")):
+            seen: list[Path] = []
+            with mock.patch(
+                "book_dev_ai_dispatch.run_provider",
+                side_effect=lambda *a, **k: (seen.append(k["cwd"]), edit_only(*a, status=status, **k))[1],
+            ):
+                report = dispatch(**common)
+            assert report["status"] == expected, report
+            assert report["flow"]["worktree_kept"] is True and seen[0].exists()
 
     # A missing reviewer CLI is reported before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), mock.patch(

@@ -182,7 +182,9 @@ def parse_providers(raw: str) -> list[str]:
     return ordered
 
 
-def build_prompt(ticket: dict[str, Any], *, mode: str, branch: str | None = None) -> str:
+def build_prompt(
+    ticket: dict[str, Any], *, mode: str, branch: str | None = None, worktree: Path | None = None
+) -> str:
     selected = ticket.get("selected") or {}
     task = selected.get("task") or {}
     repo = selected.get("repository") or {}
@@ -192,6 +194,7 @@ def build_prompt(ticket: dict[str, Any], *, mode: str, branch: str | None = None
         "data/runtime/agent-loop/book-dev/execution/current.md"
     ))
     startup = ticket.get("agent_startup_prompt") or ticket.get("agent_prompt") or ""
+    repo_line = (PROJECT_ROOT / repo["path"]).resolve() if repo.get("path") else None
     mode_line = (
         "Mode: PLAN ONLY. Inspect evidence, produce a disposition and verification plan. "
         "Do not edit files."
@@ -199,10 +202,15 @@ def build_prompt(ticket: dict[str, Any], *, mode: str, branch: str | None = None
         else "Mode: IMPLEMENT. You may edit files inside the selected nested repository only."
     )
     if branch:
+        repo_line = worktree
+        # The startup brief carries the push/deploy closeout of the single-provider flow.
+        startup = "(omitted: the worktree rules above replace its release steps)"
         release = f"""- You are in a dedicated worktree on branch `{branch}`. After verification,
     commit only scoped files on this branch. Do not push, deploy, switch
     branches or open PRs: the dispatcher sends your commits to an independent
-    reviewer and opens the pull request; the owner approves merge and deploy."""
+    reviewer and opens the pull request; the owner approves merge and deploy.
+    This overrides any push, deploy or release step in the ticket markdown or
+    the skill."""
     else:
         release = """- After verification, follow the automatic release closeout in the skill:
     commit only scoped files, push the configured upstream, deploy only through
@@ -225,7 +233,7 @@ Hard stop rules (non-negotiable):
 
 Ticket status: {ticket.get('status')}
 Task: {task_label} {_clean(task.get('title'), 200)}
-Repository: {(PROJECT_ROOT / repo['path']).resolve() if repo.get('path') else None}
+Repository: {repo_line}
 Source: {selected.get('source') or 'open_task'}
 Recommendation: {_clean(selected.get('recommendation'), 300)}
 
@@ -529,7 +537,7 @@ def build_review(
         "reviews": [],
         "pull_request": None,
     }
-    prompt = build_prompt(ticket, mode="implement", branch=branch)
+    prompt = build_prompt(ticket, mode="implement", branch=branch, worktree=worktree)
     prompt_file = write_prompt_file(prompt, dispatch_dir)
     common = dict(max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=dispatch_dir)
     results: list[dict[str, Any]] = []
@@ -565,17 +573,25 @@ def build_review(
         results.append(result)
         return result
 
-    def discard() -> None:
-        _git(repo_dir, "worktree", "remove", "--force", str(worktree))
+    def untouched() -> bool:
+        """Discard the worktree only when it has no commits and no edits; else keep it."""
+        commits = _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip()
+        dirty = _git(worktree, "status", "--porcelain").stdout.strip()
+        if commits or dirty:
+            return False
+        _git(repo_dir, "worktree", "remove", str(worktree))
         _git(repo_dir, "branch", "-D", branch)
+        return True
 
     result = build(0, None)
     if result["status"] != "dispatched":
-        discard()
+        flow["worktree_kept"] = not untouched()
         return result["status"], results, flow
     if not _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip():
-        discard()
-        return "no_changes", results, flow
+        if untouched():
+            return "no_changes", results, flow
+        flow["worktree_kept"] = True
+        return "uncommitted_changes", results, flow
 
     review_prompt = build_review_prompt(ticket, base=base, branch=branch)
     for round_no in range(MAX_FIX_ROUNDS + 1):

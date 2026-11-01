@@ -26,7 +26,8 @@
 | 6. Merge/Deploy | เจ้าของ | – | dispatcher ไม่ merge และไม่ deploy เอง |
 
 ผลลัพธ์ต่อ issue (`status` ใน report): `dispatched` = เปิด PR แล้ว, `review_blocked` = แก้ 2 รอบแล้ว Codex ยังไม่ผ่าน (เก็บ worktree ไว้ให้เจ้าของตัดสิน),
-`no_changes` = Claude ไม่ได้ commit อะไร (ลบ worktree), `failed`/`timeout` = ดู log ใน dispatch directory
+`no_changes` = Claude ไม่ได้แก้อะไร (ลบ worktree), `uncommitted_changes` = แก้แล้วแต่ไม่ commit,
+`failed`/`timeout` = ดู log ใน dispatch directory สามกรณีหลังเก็บ worktree ไว้ถ้ามีงานค้าง (`flow.worktree_kept`) ลบเองด้วย `git worktree remove` เมื่อตัดสินแล้ว
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)
 
 ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ
@@ -63,4 +64,5 @@ systemctl --user disable --now book-dev-dispatch.timer
 ```
 
 Timer รันทุก 2 ชั่วโมงตั้งแต่ 08:00 ถึง 22:00 (Asia/Bangkok) และไม่เริ่มรอบใหม่ระหว่างที่รอบก่อนยังทำงานอยู่
+Service ให้เวลาหนึ่งรอบสูงสุด 3 ชั่วโมง 10 นาที (สร้าง + แก้ 2 + รีวิว 3 ครั้ง ครั้งละ 30 นาที) หลังอัปเดตให้รัน `task book-dev:linear:timer -- --activate --replace`
 Timer ทำงานเฉพาะตอนที่เครื่องและ user service เปิดอยู่

@@ -29,6 +29,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 UNIT = "book-dev-dispatch"
+# Build-review flow worst case: build + 2 fixes + 3 reviews at the 1800 s
+# per-provider timeout, plus margin for git, push and PR creation.
+SERVICE_TIMEOUT_SEC = 6 * 1800 + 600
 SCHEDULE = "*-*-* 08,10,12,14,16,18,20,22:00:00 Asia/Bangkok"
 
 
@@ -49,7 +52,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 UMask=0077
-TimeoutStartSec=2400
+TimeoutStartSec={SERVICE_TIMEOUT_SEC}
 WorkingDirectory={str(root).replace("%", "%%")}
 Environment={unit_quote("PATH=" + path)}
 Environment=GIT_TERMINAL_PROMPT=0
