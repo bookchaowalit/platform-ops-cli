@@ -18,14 +18,14 @@
 
 | ขั้น | ใครทำ | พื้นที่ทำงาน | ผลลัพธ์ |
 |---|---|---|---|
-| 1. สร้าง | Claude Code (`claude -p`, acceptEdits, tool allowlist) | worktree ใหม่ `data/runtime/agent-loop/book-dev/execution/worktrees/<repo>-<stamp>` บน branch `ai/<issue>-<stamp>` แตกจาก HEAD ของ checkout | commit บน branch (ห้าม push/deploy/เปิด PR เอง) |
-| 2. รีวิว | Codex (`codex exec --sandbox read-only`) | worktree เดิม อ่านอย่างเดียว | รายงาน finding + บรรทัด `VERDICT: PASS` หรือ `VERDICT: BLOCKING` |
+| 1. สร้าง | Claude Code (`claude -p`, acceptEdits, tool allowlist) | worktree ใหม่ `data/runtime/agent-loop/book-dev/execution/worktrees/<repo>-<stamp>` บน branch `ai/<issue>-<stamp>` แตกจาก `origin/<branch ที่ checkout อยู่>` หลัง fetch (commit ที่ยังไม่ push ในเครื่องจะไม่ติดเข้า PR) | commit บน branch (ห้าม push/deploy/เปิด PR เอง) |
+| 2. รีวิว | Codex (`codex exec --sandbox read-only`) | checkout แยกแบบ detached ที่ commit นั้นพอดี (worktree ต้องสะอาด ไม่มีไฟล์ค้างนอก commit) | รายงาน finding + บรรทัด `VERDICT: PASS` หรือ `VERDICT: BLOCKING` |
 | 3. แก้ | Claude Code | worktree เดิม | commit แก้เฉพาะข้อ blocking สูงสุด 2 รอบ แต่ละรอบ Codex รีวิวใหม่ |
-| 4. เปิด PR | dispatcher | push branch แล้ว `gh pr create` | PR ไปยัง branch ที่ checkout อยู่ (ปกติ `main`) แล้วลบ worktree |
+| 4. เปิด PR | dispatcher | push SHA ที่รีวิวผ่านเข้า branch แล้ว `gh pr create` | PR ไปยัง branch ที่ checkout อยู่ (ปกติ `main`) แล้วลบ worktree |
 | 5. CI | GitHub Actions ของ repo | PR | CI ต้องผ่าน |
 | 6. Merge/Deploy | เจ้าของ | – | dispatcher ไม่ merge และไม่ deploy เอง |
 
-ผลลัพธ์ต่อ issue (`status` ใน report): `dispatched` = เปิด PR แล้ว, `review_blocked` = แก้ 2 รอบแล้ว Codex ยังไม่ผ่าน (เก็บ worktree ไว้ให้เจ้าของตัดสิน),
+ผลลัพธ์ต่อ issue (`status` ใน report): `dispatched` = เปิด PR แล้ว, `review_blocked` = แก้ 2 รอบแล้ว Codex ยังไม่ผ่าน หรือ branch แก้ไฟล์คำสั่ง agent (`AGENTS.md`, `CLAUDE.md`, `.codex/`, `.claude/`, …) ที่ Codex จะโหลดเป็นคำสั่งตัวเอง จึงไม่ส่งรีวิว (เก็บ worktree ไว้ให้เจ้าของตัดสิน),
 `no_changes` = Claude ไม่ได้แก้อะไร (ลบ worktree), `uncommitted_changes` = แก้แล้วแต่ไม่ commit,
 `failed`/`timeout` = ดู log ใน dispatch directory สามกรณีหลังเก็บ worktree ไว้ถ้ามีงานค้าง (`flow.worktree_kept`) ลบเองด้วย `git worktree remove` เมื่อตัดสินแล้ว
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)

@@ -52,8 +52,8 @@ SKILL_FILE = SKILLS_ROOT / "book-dev-engineering-loop" / "SKILL.md"
 MODES = {"plan", "implement"}
 SUPPORTED_REVIEWERS = {"codex"}
 MAX_FIX_ROUNDS = 2
-# Files a reviewer CLI reads as instructions; a builder commit touching them
-# could steer its own review, so the PR flags it for the owner.
+# Files a reviewer CLI loads as instructions; a builder commit touching them
+# could steer its own review, so such a branch goes to the owner unreviewed.
 AGENT_INSTRUCTION_RE = re.compile(r"(^|/)(AGENTS\.md|CLAUDE\.md|GEMINI\.md|\.codex/|\.claude/|\.github/agents/)")
 VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)
 
@@ -562,6 +562,14 @@ def build_review(
     if missing:
         # Check before creating the worktree so a missing CLI leaves nothing behind.
         return "unavailable", results, {**flow, "error": f"CLI not found: {', '.join(missing)}"}
+    # Branch from the PR target as the remote has it, so local unpushed commits
+    # cannot ride into the PR outside the reviewed range.
+    if _git(repo_dir, "fetch", "-q", "origin", base_branch).returncode != 0:
+        return "failed", results, {**flow, "error": f"could not fetch origin/{base_branch}"}
+    base = _git(repo_dir, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base_branch}").stdout.strip()
+    if not base:
+        return "failed", results, {**flow, "error": f"origin/{base_branch} not found"}
+    flow["base"] = base
     worktree.parent.mkdir(parents=True, exist_ok=True)
     added = _git(repo_dir, "worktree", "add", "-b", branch, str(worktree), base)
     if added.returncode != 0:
@@ -612,6 +620,12 @@ def build_review(
         if _git(worktree, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip() != branch:
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"builder left branch {branch}"}
+        changed = _git(worktree, "diff", "--name-only", f"{base}..{head}").stdout.split()
+        flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
+        if flow["agent_instruction_files"]:
+            # The reviewer would load these as its own instructions: owner reviews by hand.
+            flow["worktree_kept"] = True
+            return "review_blocked", results, {**flow, "error": "branch changes agent instruction files"}
         # The reviewer reads a fresh detached checkout of the exact commit, so
         # nothing the builder left outside Git can reach it.
         review_tree = worktree.parent / f"{worktree.name}-review-{round_no}"
@@ -648,8 +662,6 @@ def build_review(
     if _git(worktree, "rev-parse", f"refs/heads/{branch}").stdout.strip() != head:
         flow["worktree_kept"] = True
         return "failed", results, {**flow, "error": "branch moved after the passing review"}
-    changed = _git(worktree, "diff", "--name-only", f"{base}..{head}").stdout.split()
-    flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
 
     task = ((ticket.get("selected") or {}).get("task") or {})
     title = _clean(task.get("title"), 120) or branch
@@ -657,12 +669,6 @@ def build_review(
         f"Built by `{builder}` and reviewed read-only by `{reviewer}` "
         f"({len(flow['reviews'])} review round(s), final verdict PASS on {head}).\n\n"
         f"Ticket: {task.get('id')}\n\n"
-        + (
-            "**Check by hand:** this PR changes agent instruction files the reviewer reads "
-            f"({', '.join(flow['agent_instruction_files'])}).\n\n"
-            if flow["agent_instruction_files"] else ""
-        )
-        + 
         "Merge and deploy need owner approval after CI passes.\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
     )

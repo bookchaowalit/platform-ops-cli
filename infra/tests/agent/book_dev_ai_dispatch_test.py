@@ -109,6 +109,13 @@ def build_review_tests(tmp: Path) -> None:
     repo = tmp / "repo"
     (repo / ".git").rmdir()
     git_repo(repo)
+    origin = tmp / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+    pushed_main = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    # A local commit not on origin must not enter the reviewed branch.
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "local-only"], check=True)
     common = dict(ticket_path=ticket_path, providers=["claude"], mode="implement", write_ticket=False, reviewer="codex")
 
     for bad in (dict(providers=["claude", "grok"]), dict(mode="plan"), dict(providers=["codex"]), dict(reviewer="grok")):
@@ -157,7 +164,8 @@ def build_review_tests(tmp: Path) -> None:
         branch = report["flow"]["branch"]
         assert pr.call_args.kwargs["branch"] == branch and pr.call_args.kwargs["base_branch"] == "main"
         log = subprocess.run(["git", "-C", str(repo), "log", "--format=%s", branch], capture_output=True, text=True).stdout
-        assert log.split() == ["claude-fix-1", "claude-build", "init"]
+        assert log.split() == ["claude-fix-1", "claude-build", "init"], "branch starts at origin/main"
+        assert report["flow"]["base"] == pushed_main and pushed_main in calls[1]["prompt"]
         assert subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
                               capture_output=True, text=True).stdout.strip() == "main"
 
@@ -182,14 +190,16 @@ def build_review_tests(tmp: Path) -> None:
         assert [c["label"] for c in calls] == ["claude-build"] and report["flow"]["worktree_kept"]
         pr.assert_not_called()
 
-        # A commit that changes agent instruction files is flagged in the PR body.
-        run, calls = fake_provider(["PASS"], files=("AGENTS.md",))
+        # A commit that changes instruction files the reviewer loads never reaches the reviewer.
+        run, calls = fake_provider([], files=("AGENTS.md",))
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
-            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+            "book_dev_ai_dispatch.open_pull_request"
         ) as pr:
             report = dispatch(**common)
-        assert report["flow"]["agent_instruction_files"] == ["AGENTS.md"], report
-        assert "AGENTS.md" in pr.call_args.kwargs["body"]
+        assert report["status"] == "review_blocked", report
+        assert report["flow"]["agent_instruction_files"] == ["AGENTS.md"]
+        assert [c["label"] for c in calls] == ["claude-build"]
+        pr.assert_not_called()
 
         # No commits: nothing to review, worktree and branch discarded.
         run, calls = fake_provider([], commit=False)
@@ -214,9 +224,6 @@ def build_review_tests(tmp: Path) -> None:
             assert report["flow"]["worktree_kept"] is True and seen[0].exists()
 
     # The push sends the reviewed commit even when the branch has moved on since.
-    origin = tmp / "origin.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
-    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
     reviewed = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "later"], check=True)
     with mock.patch("book_dev_ai_dispatch.shutil.which", return_value=None):
