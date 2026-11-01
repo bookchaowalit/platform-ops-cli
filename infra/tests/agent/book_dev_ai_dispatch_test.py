@@ -143,6 +143,17 @@ def build_review_tests(tmp: Path) -> None:
 
         # Blocking once, then pass: one fix round, then a PR from the branch.
         run, calls = fake_provider(["BLOCKING", "PASS"])
+        # A builder-planted symlink at the review report name must not be followed.
+        victim = tmp / "victim.txt"
+        victim.write_text("keep me")
+        real_run = run
+
+        def run(provider, **kwargs):
+            result = real_run(provider, **kwargs)
+            if kwargs["label"] == "claude-build":
+                (kwargs["dispatch_dir"] / "codex-review-0.last-message.md").symlink_to(victim)
+            return result
+
         opened = {"status": "opened", "url": "https://github.com/o/r/pull/1"}
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
             "book_dev_ai_dispatch.open_pull_request", return_value=opened
@@ -156,6 +167,7 @@ def build_review_tests(tmp: Path) -> None:
         assert calls[1]["isolated"] and not calls[0]["isolated"]
         assert calls[0]["cwd"].parent not in calls[1]["cwd"].parents, "review checkout lives outside the builder's dirs"
         assert Path(report["flow"]["reviews"][0]["report"]).read_text().startswith("finding")
+        assert victim.read_text() == "keep me" and not Path(report["flow"]["reviews"][0]["report"]).is_symlink()
         assert calls[3]["head"] in calls[3]["prompt"] and calls[3]["head"] != calls[1]["head"]
         assert pr.call_args.kwargs["head"] == calls[3]["head"] == report["flow"]["reviews"][-1]["head"]
         # The fix round reaches prompt-file providers (Grok) too.
@@ -197,13 +209,13 @@ def build_review_tests(tmp: Path) -> None:
         pr.assert_not_called()
 
         # A commit that changes instruction files the reviewer loads never reaches the reviewer.
-        run, calls = fake_provider([], files=("AGENTS.override.md", "sub/claude.local.md"))
+        run, calls = fake_provider([], files=("AGENTS.override.md", "two words/claude.local.md"))
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
             "book_dev_ai_dispatch.open_pull_request"
         ) as pr:
             report = dispatch(**common)
         assert report["status"] == "review_blocked", report
-        assert report["flow"]["agent_instruction_files"] == ["AGENTS.override.md", "sub/claude.local.md"]
+        assert report["flow"]["agent_instruction_files"] == ["AGENTS.override.md", "two words/claude.local.md"]
         assert [c["label"] for c in calls] == ["claude-build"]
         pr.assert_not_called()
 

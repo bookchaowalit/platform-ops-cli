@@ -631,7 +631,7 @@ def build_review(
         if _git(worktree, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip() != branch:
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"builder left branch {branch}"}
-        changed = _git(worktree, "diff", "--name-only", f"{base}..{head}").stdout.split()
+        changed = [path for path in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
         flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
         if flow["agent_instruction_files"]:
             # The reviewer would load these as its own instructions: owner reviews by hand.
@@ -657,11 +657,17 @@ def build_review(
                 text = _read(Path(private) / f"{label}.last-message.md")
             finally:
                 _git(repo_dir, "worktree", "remove", "--force", str(review_tree))
-            # Keep copies in the dispatch directory for the owner.
+            # Keep copies in the dispatch directory for the owner. The builder can
+            # write there, so replace whatever sits at the name (even a symlink)
+            # and refuse to follow anything recreated in between.
             for suffix in ("log", "last-message.md"):
                 source = Path(private) / f"{label}.{suffix}"
                 if source.is_file():
-                    shutil.copyfile(source, dispatch_dir / source.name)
+                    target = dispatch_dir / source.name
+                    target.unlink(missing_ok=True)
+                    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(source.read_bytes())
             review["log"] = _path_label(dispatch_dir / f"{label}.log")
             review["last_message"] = _path_label(dispatch_dir / f"{label}.last-message.md")
         results.append(review)
