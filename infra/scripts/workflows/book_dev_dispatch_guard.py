@@ -85,14 +85,20 @@ PUBLISH_VERBS = {"publish", "push", "login", "deprecate", "unpublish", "owner", 
 # Git subcommands the builder may run in a worktree branch; anything else (aliases,
 # push, merge, switch, remote, config writes ...) is denied.
 GIT_BRANCH_ALLOW = {
-    "add", "am", "apply", "bisect", "blame", "branch", "cat-file", "check-attr", "check-ignore", "checkout",
-    "cherry", "cherry-pick", "commit", "config", "describe", "diff", "diff-files", "diff-index", "diff-tree",
+    "add", "am", "apply", "blame", "branch", "cat-file", "check-attr", "check-ignore", "checkout",
+    "cherry", "cherry-pick", "commit", "describe", "diff", "diff-files", "diff-index", "diff-tree",
     "fetch", "format-patch", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "merge-base",
     "mv", "name-rev", "notes", "range-diff", "rebase", "reflog", "reset", "restore", "rev-list", "rev-parse",
-    "revert", "rm", "shortlog", "show", "show-ref", "stash", "status", "submodule", "symbolic-ref", "var",
+    "revert", "rm", "shortlog", "show", "show-ref", "stash", "status", "symbolic-ref", "var",
     "version", "whatchanged",
 }
-GIT_CONFIG_READ = {"--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope", "get", "list"}
+# Options of allowed subcommands that run an arbitrary program.
+GIT_EXEC_OPTS = {"-x", "--exec", "--upload-pack", "--receive-pack", "--ext-diff", "--textconv"}
+# Environment overrides that change which config, hooks, ssh or editor git runs.
+GIT_ENV_RE = re.compile(
+    r"^(GIT_CONFIG\w*|GIT_SSH\w*|GIT_EXEC_PATH|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS"
+    r"|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_TEMPLATE_DIR|GIT_INDEX_FILE)="
+)
 GIT_BRANCH_DENY = {"push", "switch", "merge", "tag", "worktree", "remote", "filter-branch", "filter-repo", "update-ref"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 CURL_VALUE_SHORT = set("oHuAewmxbcKErYyzCPQUDJ")
@@ -236,8 +242,13 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     if policy == "branch":
         if sub not in GIT_BRANCH_ALLOW or sub in GIT_BRANCH_DENY:
             return f"git {sub} is not on the builder's list; commit on this branch only"
-        if sub == "config" and not GIT_CONFIG_READ & set(rest):
-            return "git config writes (hooks, aliases, remotes, credentials) are not allowed"
+        if GIT_EXEC_OPTS & {item.split("=", 1)[0] for item in rest} or (sub in {"fetch", "ls-remote"} and "-u" in rest):
+            return f"git {sub} options that run another program are not allowed"
+        output = next((item.split("=", 1)[1] for item in rest if item.startswith("--output=")), None)
+        if output is None and "--output" in rest and rest.index("--output") + 1 < len(rest):
+            output = rest[rest.index("--output") + 1]
+        if output is not None:
+            return "git --output is not allowed; redirect inside the working directory instead"
         if sub in GIT_BRANCH_DENY:
             return f"git {sub} is the dispatcher's or owner's step; commit on this branch only"
         if sub == "checkout" and "--" not in rest:
@@ -333,6 +344,8 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
             continue
         words.append(token)
         i += 1
+    if ctx.policy == "branch" and any(GIT_ENV_RE.match(word) for word in argv):
+        return "git environment overrides (config, ssh, hooks, editor) are not allowed"
     for word in argv:
         if ("/" in word or word.startswith((".", "~"))) and _secret_resolved(word.split("=", 1)[-1], ctx.here):
             return "the command touches a secret or credential path"

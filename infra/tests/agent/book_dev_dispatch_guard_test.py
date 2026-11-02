@@ -152,6 +152,18 @@ def main() -> int:
             "git -c core.sshCommand=x fetch",
             "git p origin HEAD",
             "git pull origin main",
+            "git config --get user.name --add core.hooksPath x",
+            "git config user.name bot",
+            "git rebase -x 'gh pr create' origin/main",
+            "git rebase --exec=./deploy.sh origin/main",
+            "git bisect run ./x.sh",
+            "git submodule foreach 'git push'",
+            "git fetch --upload-pack='sh -c x' origin",
+            "git ls-remote -u x origin",
+            "git log --output=../out.txt",
+            "GIT_SSH_COMMAND='ssh -i k' git fetch",
+            "GIT_CONFIG_GLOBAL=/tmp/c git status",
+            "export GIT_DIR=/elsewhere && git status",
             "cat /proc/self/environ",
             "cat " + "../" * 30 + "home/someone/.config/gh/hosts.yml",
             "cat " + str(Path.home() / ".ssh" / "config"),
@@ -159,7 +171,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("git config --get user.name", "git config --list", "git stash", "git log -1", "git rebase -i origin/main"):
+        for command in ("GIT_PAGER=cat git log -1", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
         assert bash("git push --force-with-lease=refs/heads/main:abc origin main", cwd, "release")
         assert bash("git push -uf origin main", cwd, "release")
