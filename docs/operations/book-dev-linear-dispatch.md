@@ -34,6 +34,8 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 - ทุก flow: ห้ามแตะ path ของ secret (`.env`, key, `~/.ssh`, `~/.config` …) และตัวแปร env ที่ชื่อเป็น credential (`$..._TOKEN`, `printenv`), ห้ามเขียนไฟล์นอก working directory ทั้งผ่าน Edit/Write และผ่าน shell (`>`, `tee`, `cp`, `mv`, `dd`; ยกเว้น `/dev/*`), ห้าม `sudo`, `git reset --hard`, `git clean`, force push, `rm -r` นอก working directory และการ dump env
 - คำสั่ง shell ถูกแยก token ตาม quote แล้วตัดตาม `;`/`&&`/`|` และตรวจข้อความใน `bash -c`, `eval`, `$(...)` ด้วย
 - Flow สร้าง–รีวิว (policy `branch`) ห้ามเพิ่ม: `git push`/`switch`/`checkout <branch>`/`merge`/`tag`/`worktree`, CLI `gh` ทุกคำสั่ง (รวมแบบอ่าน), CLI deploy/cloud/secret (`vercel`, `railway`, `wrangler`, `infisical` …), `npm publish`/`docker push`, curl/wget ที่ส่งข้อมูลออก และการเขียนไฟล์คำสั่ง agent
+- Policy `branch` อนุญาต git เฉพาะ subcommand ในรายการ (add, commit, diff, log, stash, rebase …) ห้าม alias, `git -c` และ `git config` แบบเขียน เพื่อไม่ให้เปลี่ยน hook, remote หรือ credential ที่ dispatcher จะใช้ตอน push (dispatcher เองก็ push ด้วย `-c core.hooksPath=/dev/null`)
+- Claude builder รันโดยตัดตัวแปร env ที่ชื่อเป็น credential ออก (`GH_TOKEN`, `*_TOKEN`, `*_API_KEY`, `SSH_AUTH_SOCK` …) เหลือแค่ login ของ Claude เอง
 - ทดสอบสดแล้ว 2026-11-02: push, `gh` และการเขียน `AGENTS.md` ถูกบล็อก ส่วน `git status` และการเขียนไฟล์ปกติผ่าน
 ข้อจำกัดที่เหลือ: guard ตรวจจากข้อความคำสั่ง ไม่ใช่ sandbox ระดับ OS โปรแกรมที่ตั้งใจหลบ (เช่น สคริปต์ที่ builder เขียนเองแล้วสั่งรัน) ยังเลี่ยงได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)

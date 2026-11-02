@@ -370,6 +370,20 @@ def build_provider_command(
     raise ValueError(f"unsupported provider: {provider}")
 
 
+CREDENTIAL_ENV_RE = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY|_PAT$|^SSH_AUTH_SOCK$")
+CLAUDE_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+
+
+def provider_env(provider: str) -> dict[str, str] | None:
+    """Claude builds without the dispatcher's push, deploy and cloud credentials; others inherit."""
+    if provider != "claude":
+        return None
+    return {
+        name: value for name, value in os.environ.items()
+        if name in CLAUDE_AUTH_ENV or not CREDENTIAL_ENV_RE.search(name.upper())
+    }
+
+
 def run_provider(
     provider: str,
     *,
@@ -430,6 +444,7 @@ def run_provider(
             command,
             input=stdin_data,
             cwd=str(cwd),
+            env=provider_env(provider),
             capture_output=True,
             text=True,
             timeout=timeout_sec,
@@ -524,7 +539,8 @@ def open_pull_request(
     worktree: Path, *, branch: str, base_branch: str, head: str, title: str, body: str
 ) -> dict[str, Any]:
     # Push exactly the reviewed commit, not whatever the branch points to now.
-    push = _git(worktree, "push", "origin", f"{head}:refs/heads/{branch}")
+    # Repository hooks never run on the dispatcher's push; the builder cannot change config (guard).
+    push = _git(worktree, "-c", "core.hooksPath=/dev/null", "push", "origin", f"{head}:refs/heads/{branch}")
     if push.returncode != 0:
         return {"status": "push_failed", "error": _clean(push.stderr, 400)}
     gh = shutil.which("gh")

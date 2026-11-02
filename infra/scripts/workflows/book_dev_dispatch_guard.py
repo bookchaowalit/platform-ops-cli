@@ -43,6 +43,7 @@ SECRET_PATH_RE = re.compile(
     r"\.env(\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?"
     r"|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
     r"|id_(rsa|dsa|ecdsa|ed25519)[\w.-]*"
+    r"|/proc/[^/\s]+/(environ|cmdline|mem)"
     r"|\.netrc|\.git-credentials|\.npmrc|\.pypirc|credentials\.json|book-dev-dispatch\.env"
     r")" + _TAIL
     + r"|" + _LEAD + r"(~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)/\.(ssh|config|aws|gnupg|docker|kube|infisical)(/|$|[\s'\"<>])",
@@ -81,6 +82,17 @@ BRANCH_DENY_CLI = {
 }
 PUBLISH = {"npm", "pnpm", "yarn", "bun", "cargo", "gem", "poetry", "uv", "docker", "podman"}
 PUBLISH_VERBS = {"publish", "push", "login", "deprecate", "unpublish", "owner", "dist-tag", "yank"}
+# Git subcommands the builder may run in a worktree branch; anything else (aliases,
+# push, merge, switch, remote, config writes ...) is denied.
+GIT_BRANCH_ALLOW = {
+    "add", "am", "apply", "bisect", "blame", "branch", "cat-file", "check-attr", "check-ignore", "checkout",
+    "cherry", "cherry-pick", "commit", "config", "describe", "diff", "diff-files", "diff-index", "diff-tree",
+    "fetch", "format-patch", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "merge-base",
+    "mv", "name-rev", "notes", "range-diff", "rebase", "reflog", "reset", "restore", "rev-list", "rev-parse",
+    "revert", "rm", "shortlog", "show", "show-ref", "stash", "status", "submodule", "symbolic-ref", "var",
+    "version", "whatchanged",
+}
+GIT_CONFIG_READ = {"--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope", "get", "list"}
 GIT_BRANCH_DENY = {"push", "switch", "merge", "tag", "worktree", "remote", "filter-branch", "filter-repo", "update-ref"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 CURL_VALUE_SHORT = set("oHuAewmxbcKErYyzCPQUDJ")
@@ -115,6 +127,18 @@ def _resolve(path: str, base: Path) -> Path | None:
 
 def _within(resolved: Path | None, root: Path) -> bool:
     return resolved is not None and (resolved == root or root in resolved.parents)
+
+
+HOME_SECRET_DIRS = tuple(Path.home() / name for name in (".ssh", ".config", ".aws", ".gnupg", ".docker", ".kube", ".infisical"))
+
+
+def _secret_resolved(path: str, base: Path) -> bool:
+    """A relative path such as ../../.ssh/id_rsa still lands in a secret directory."""
+    resolved = _resolve(path, base)
+    return resolved is not None and (
+        any(resolved == secret or secret in resolved.parents for secret in HOME_SECRET_DIRS)
+        or bool(SECRET_PATH_RE.search(" " + resolved.as_posix() + " "))
+    )
 
 
 def _write_reason(path: str, ctx: _Ctx) -> str | None:
@@ -189,6 +213,8 @@ def _strip_prefix(argv: list[str]) -> list[str]:
 def _git_reason(args: list[str], policy: str) -> str | None:
     i = 0
     while i < len(args) and args[i].startswith("-"):
+        if policy == "branch" and (args[i] == "-c" or args[i].startswith(("-c", "--config-env"))):
+            return "git -c overrides (hooks, aliases, remotes, credentials) are not allowed"
         i += 2 if args[i] in GIT_VALUE_OPTS else 1
     if i >= len(args):
         return None
@@ -208,6 +234,10 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     if sub == "branch" and ({"D", "d", "m", "M", "f"} & set(short) or longs & {"--delete", "--move", "--force"}):
         return "deleting, renaming or forcing branches is not allowed"
     if policy == "branch":
+        if sub not in GIT_BRANCH_ALLOW or sub in GIT_BRANCH_DENY:
+            return f"git {sub} is not on the builder's list; commit on this branch only"
+        if sub == "config" and not GIT_CONFIG_READ & set(rest):
+            return "git config writes (hooks, aliases, remotes, credentials) are not allowed"
         if sub in GIT_BRANCH_DENY:
             return f"git {sub} is the dispatcher's or owner's step; commit on this branch only"
         if sub == "checkout" and "--" not in rest:
@@ -303,6 +333,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
             continue
         words.append(token)
         i += 1
+    for word in argv:
+        if ("/" in word or word.startswith((".", "~"))) and _secret_resolved(word.split("=", 1)[-1], ctx.here):
+            return "the command touches a secret or credential path"
     argv = _strip_prefix(words)
     if not argv or os.path.basename(argv[0]) in SKIP_SEGMENT:
         return None
@@ -427,7 +460,7 @@ def decide(payload: dict, policy: str) -> str | None:
         value = tool_input.get(key)
         if not isinstance(value, str) or not value:
             continue
-        if SECRET_PATH_RE.search(" " + value + " "):
+        if SECRET_PATH_RE.search(" " + value + " ") or _secret_resolved(value, cwd):
             return _deny("secret and credential paths are off limits")
         if tool in WRITE_TOOLS:
             reason = _write_reason(value, _Ctx(cwd, policy))

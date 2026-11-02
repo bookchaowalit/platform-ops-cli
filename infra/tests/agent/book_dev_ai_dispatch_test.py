@@ -20,6 +20,7 @@ from book_dev_ai_dispatch import (  # noqa: E402
     open_pull_request,
     parse_verdict,
     provider_availability,
+    provider_env,
     resolve_claude_cmd,
     resolve_repo_dir,
     run_provider,
@@ -379,6 +380,13 @@ def main() -> int:
                     cwd=tmp / "repo",
                 )
             assert result["status"] == "dispatched"
+            # The builder runs without push/deploy credentials but keeps its own login.
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "x", "VERCEL_TOKEN": "x", "SSH_AUTH_SOCK": "/s",
+                                              "CLAUDE_CODE_OAUTH_TOKEN": "c", "PATH": os.environ.get("PATH", "")}):
+                env = provider_env("claude")
+                assert "GH_TOKEN" not in env and "VERCEL_TOKEN" not in env and "SSH_AUTH_SOCK" not in env
+                assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "PATH" in env
+                assert provider_env("codex") is None
             assert run.call_args.kwargs["cwd"] == str(tmp / "repo")
 
     # Claude CLI lookup: explicit override, then the desktop app's newest build.
