@@ -495,9 +495,13 @@ def run_provider(
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False, timeout=120
-    )
+    """Run git; a timeout comes back as a failed result so the flow still writes its report."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False, timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["git", *args], 124, "", f"git {args[0]} timed out after 120s")
 
 
 def _branch_name(ticket: dict[str, Any], stamp: str) -> str:
@@ -557,10 +561,13 @@ def open_pull_request(
     gh = shutil.which("gh")
     if not gh:
         return {"status": "pr_failed", "error": "gh CLI not found; branch was pushed"}
-    created = subprocess.run(
-        [gh, "pr", "create", "--base", base_branch, "--head", branch, "--title", title, "--body", body],
-        cwd=str(worktree), capture_output=True, text=True, check=False, timeout=120,
-    )
+    try:
+        created = subprocess.run(
+            [gh, "pr", "create", "--base", base_branch, "--head", branch, "--title", title, "--body", body],
+            cwd=str(worktree), capture_output=True, text=True, check=False, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "pr_failed", "error": "gh pr create timed out after 120s; branch was pushed"}
     if created.returncode != 0:
         return {"status": "pr_failed", "error": _clean(created.stderr, 400)}
     return {"status": "opened", "url": created.stdout.strip().splitlines()[-1] if created.stdout.strip() else None}
@@ -583,7 +590,8 @@ def build_review(
     branch = _branch_name(ticket, stamp)
     base_branch = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
     base = _git(repo_dir, "rev-parse", "--verify", "-q", "HEAD").stdout.strip()
-    worktree = dispatch_dir.parent.parent / "worktrees" / f"{repo_dir.name}-{stamp}"
+    # Absolute: git -C <repo> and the builder's cwd must name the same directory.
+    worktree = (dispatch_dir.parent.parent / "worktrees" / f"{repo_dir.name}-{stamp}").resolve()
     flow: dict[str, Any] = {
         "name": "build-review",
         "builder": builder,
@@ -812,6 +820,9 @@ def dispatch(
             raise ValueError("build-review flow needs implement mode and exactly one builder")
         if selected_providers[0] == reviewer:
             raise ValueError("builder and reviewer must be different providers")
+        if selected_providers[0] != "claude":
+            # Only Claude runs under the dispatch guard and a scrubbed env; another builder could push first.
+            raise ValueError("build-review flow supports only the claude builder")
     ticket = load_ticket(ticket_path)
     if not ticket.get("selected"):
         raise ValueError("execution ticket has no selected candidate to dispatch")

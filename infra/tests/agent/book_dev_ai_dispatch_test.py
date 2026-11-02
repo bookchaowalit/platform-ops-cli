@@ -130,7 +130,8 @@ def build_review_tests(tmp: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "local-only"], check=True)
     common = dict(ticket_path=ticket_path, providers=["claude"], mode="implement", write_ticket=False, reviewer="codex")
 
-    for bad in (dict(providers=["claude", "grok"]), dict(mode="plan"), dict(providers=["codex"]), dict(reviewer="grok")):
+    for bad in (dict(providers=["claude", "grok"]), dict(mode="plan"), dict(providers=["codex"]), dict(reviewer="grok"),
+                dict(providers=["grok"])):
         try:
             dispatch(**{**common, **bad})
             raise AssertionError(f"expected rejection: {bad}")
@@ -428,6 +429,18 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temp_dir:
         build_review_tests(Path(temp_dir))
+
+    # Git and gh timeouts come back as results, so the flow still writes its report.
+    from book_dev_ai_dispatch import _git
+    with mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 120)):
+        timed_out = _git(Path("."), "fetch", "-q", "origin", "main")
+        assert timed_out.returncode == 124 and "timed out" in timed_out.stderr
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with mock.patch("book_dev_ai_dispatch._git", return_value=subprocess.CompletedProcess([], 0, "", "")), mock.patch(
+            "book_dev_ai_dispatch.shutil.which", return_value="gh"
+        ), mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 120)):
+            pr = open_pull_request(Path(temp_dir), branch="ai/x", base_branch="main", head="abc", title="t", body="b")
+        assert pr["status"] == "pr_failed" and "timed out" in pr["error"], pr
 
     print("Book Dev AI dispatch tests passed")
     return 0
