@@ -244,6 +244,12 @@ def main() -> int:
         assert tool("Grep", cwd, path=str(cwd), glob="infra/*.py", pattern=".") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/.[!x]nv", pattern=".")  # unmodelled syntax fails closed
         assert tool("Grep", cwd, path=str(cwd), glob="**/" + "{a,b}" * 8, pattern=".")  # brace bomb
+        assert tool("Grep", cwd, path=str(cwd), glob="/infra/.e?v", pattern=".")  # root-anchored
+        assert tool("Grep", cwd, path=str(cwd), glob=str(cwd) + "/infra/.e*", pattern=".")  # absolute under root
+        assert tool("Grep", cwd, path=str(cwd), glob="/etc/*", pattern=".") is None  # rg: anchored at the root
+        assert tool("Grep", cwd, path=str(cwd), glob="!*.py", pattern=".")  # negation fails closed
+        assert tool("Grep", cwd, path=str(cwd), glob="infra/", pattern=".")  # directory form fails closed
+        assert tool("Grep", cwd, path=str(cwd), glob="/infra/*.py", pattern=".") is None
         (cwd / "linked").symlink_to(cwd / "infra", target_is_directory=True)
         assert tool("Glob", cwd, path=str(cwd), pattern="linked/.*"), "a symlinked dir is walked by its own path"
         (cwd / "infra" / "loop").symlink_to(cwd, target_is_directory=True)

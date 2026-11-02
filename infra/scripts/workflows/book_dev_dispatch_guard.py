@@ -32,7 +32,8 @@ import os
 import re
 import shlex
 import sys
-from pathlib import Path, PurePosixPath
+import time
+from pathlib import Path
 
 POLICIES = ("release", "branch")
 
@@ -582,10 +583,12 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     return None
 
 
-GLOB_WALK_LIMIT = 50000
+GLOB_WALK_LIMIT = 50000  # files and directories together
+GLOB_WALK_SECONDS = 5.0
 GLOB_MAX_PATTERNS = 64
-# Glob syntax the Python matcher below does not model the way ripgrep does.
-GLOB_UNMODELLED_RE = re.compile(r"\[[!^]|\\|\s|\{[^}]*\{")
+# Glob syntax the matcher below does not model the way ripgrep does: negated classes,
+# escapes, whitespace, nested braces, `!` negation and directory-only trailing `/`.
+GLOB_UNMODELLED_RE = re.compile(r"\[[!^]|\\|\s|\{[^}]*\{|^!|/$")
 
 
 def _expand_braces(pattern: str, budget: list[int]) -> list[str]:
@@ -602,23 +605,62 @@ def _expand_braces(pattern: str, budget: list[int]) -> list[str]:
     return out
 
 
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """Translate one brace-free glob to a regex over root-relative POSIX paths.
+
+    A pattern without `/` matches at any depth; a leading `/` anchors it to the root.
+    `*` and `?` stay within one path segment (dotfiles included), `**` spans segments."""
+    if pattern.startswith("/"):
+        pattern = pattern.lstrip("/")
+    elif "/" not in pattern:
+        pattern = "**/" + pattern
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        elif pattern[i] == "[":
+            end = pattern.find("]", i + 1)
+            if end == -1:
+                raise ValueError("unclosed character class")
+            out.append("[" + pattern[i + 1:end].replace("\\", "\\\\") + "]")
+            i = end + 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z", re.DOTALL)
+
+
 def _glob_selects_secret(selector: str, root: Path) -> bool:
     """Whether a Grep/Glob glob could select a secret file under ``root``.
 
     The glob is matched against the real files (hidden files included, symlinked
-    directories followed once) rather than inspected as text, so `.e[n]v` or
-    `{.e,x}nv` cannot dodge a name check. It fails closed: syntax the matcher does
-    not model, too many brace expansions, an unreadable root or more than
-    GLOB_WALK_LIMIT files deny any glob with a wildcard."""
-    if SECRET_PATH_RE.search(" " + selector + " "):
+    directories followed, real cycles cut) rather than inspected as text, so `.e[n]v`
+    or `{.e,x}nv` cannot dodge a name check. It fails closed: unmodelled syntax, too
+    many brace expansions, an unreadable root, or a walk past GLOB_WALK_LIMIT entries
+    or GLOB_WALK_SECONDS all deny."""
+    if SECRET_PATH_RE.search(" " + selector + " ") or _secret_resolved(selector, root):
         return True
-    wildcard = bool(re.search(r"[*?\[\]{}]", selector))
     if GLOB_UNMODELLED_RE.search(selector) or ("," in selector and "{" not in selector):
         return True
+    # ripgrep reads a leading `/` as "anchored at the search root"; a copy of the root's
+    # own absolute path is reduced to that form.
+    if selector.startswith(str(root) + "/"):
+        selector = "/" + selector[len(str(root)) + 1:]
+    deadline = time.monotonic() + GLOB_WALK_SECONDS
     try:
-        patterns = [p if "/" in p else f"**/{p}" for p in _expand_braces(selector, [GLOB_MAX_PATTERNS])]
+        patterns = [_glob_regex(p) for p in _expand_braces(selector, [GLOB_MAX_PATTERNS])]
         if not root.is_dir():
-            return wildcard
+            return True
         seen = 0
         for directory, dirs, files in os.walk(root, followlinks=True):
             here = Path(directory)
@@ -629,19 +671,19 @@ def _glob_selects_secret(selector: str, root: Path) -> bool:
                 dirs[:] = []
                 continue
             dirs[:] = [name for name in dirs if name != ".git"]
+            seen += 1 + len(files)
+            if seen > GLOB_WALK_LIMIT or time.monotonic() > deadline:
+                return True
             for name in files:
-                seen += 1
-                if seen > GLOB_WALK_LIMIT:
-                    return wildcard
-                full = Path(directory, name)
-                relative = PurePosixPath(full.relative_to(root).as_posix())
-                if any(relative.full_match(p) for p in patterns) and (
+                full = here / name
+                relative = full.relative_to(root).as_posix()
+                if any(p.match(relative) for p in patterns) and (
                     SECRET_PATH_RE.search(" " + full.as_posix() + " ") or _secret_resolved(str(full), root)
                     or _secret_resolved(str(full.resolve()), root)
                 ):
                     return True
-    except (OSError, ValueError, RuntimeError):
-        return wildcard
+    except (OSError, ValueError, RuntimeError, re.error):
+        return True
     return False
 
 
