@@ -515,7 +515,8 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     if SECRET_ENV_RE.search(command):
         return "the command reads a credential-named environment variable"
     # The shell keeps single-quoted text literal: `$(...)` and backticks there are not run.
-    live = _outside_single_quotes(command)
+    # Here-docs and $'...' quoting are not modelled, so those commands are checked raw.
+    live = command if ("<<" in command or "$'" in command) else _outside_single_quotes(command)
     for match in SUBST_RE.finditer(live):
         reason = _command_reason(match.group(1) or match.group(2) or "", ctx, depth + 1)
         if reason:

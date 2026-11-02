@@ -179,6 +179,8 @@ def main() -> int:
             "nohup env -C /elsewhere make",
             'git commit -m "`git push`"',
             "echo `gh pr create`",
+            "cat <<EOF > notes.txt\nit's $(gh pr create --fill)\nEOF",
+            "echo $'it\\'s' $(git push)",
             "git -C ../other-repo commit -am x",
             "EDITOR='sh -c x' git commit",
             "printf x > .git/hooks/pre-push",
