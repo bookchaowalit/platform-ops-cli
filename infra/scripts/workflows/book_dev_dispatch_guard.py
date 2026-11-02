@@ -32,7 +32,7 @@ import os
 import re
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 POLICIES = ("release", "branch")
 
@@ -582,6 +582,47 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     return None
 
 
+GLOB_WALK_LIMIT = 50000
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    match = re.search(r"\{([^{}]*)\}", pattern)
+    if not match:
+        return [pattern]
+    head, tail = pattern[: match.start()], pattern[match.end():]
+    return [item for option in match.group(1).split(",") for item in _expand_braces(head + option + tail)]
+
+
+def _glob_selects_secret(selector: str, root: Path) -> bool:
+    """Whether a Grep/Glob glob matches any secret file under ``root``, hidden files included.
+
+    The glob is matched against the real files rather than inspected as text, so
+    `.e[n]v` or `{.e,x}nv` cannot dodge a name check. Past GLOB_WALK_LIMIT files, or
+    without a readable root, it falls back to denying globs that could name a secret."""
+    if SECRET_PATH_RE.search(" " + selector + " "):
+        return True
+    patterns = [p if "/" in p else f"**/{p}" for p in _expand_braces(selector)]
+    try:
+        if not root.is_dir():
+            raise OSError
+        seen = 0
+        for directory, dirs, files in os.walk(root):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            for name in files:
+                seen += 1
+                if seen > GLOB_WALK_LIMIT:
+                    raise OSError
+                relative = PurePosixPath(Path(directory, name).relative_to(root).as_posix())
+                full = Path(directory, name)
+                if any(relative.full_match(p) for p in patterns) and (
+                    SECRET_PATH_RE.search(" " + full.as_posix() + " ") or _secret_resolved(str(full), root)
+                ):
+                    return True
+    except (OSError, ValueError):
+        return bool(re.search(r"[\[\]?{}]|(^|/)\.|env|pem|key|id_", selector, re.IGNORECASE))
+    return False
+
+
 def decide(payload: dict, policy: str) -> str | None:
     """Return a deny reason, or None to let Claude Code's normal permissions decide."""
 
@@ -592,13 +633,10 @@ def decide(payload: dict, policy: str) -> str | None:
         reason = _command_reason(str(tool_input.get("command") or ""), _Ctx(cwd, policy))
         return _deny(reason) if reason else None
     # Grep/Glob select files by pattern too: `glob="**/.env"` reads what Read(.env) may not.
-    for key in ("glob", "pattern") if tool in {"Grep", "Glob"} else ():
-        value = tool_input.get(key)
-        if key == "pattern" and tool == "Grep":
-            continue  # Grep's pattern is the regex, not a path
-        if isinstance(value, str) and (SECRET_PATH_RE.search(" " + value + " ") or re.search(
-            r"(^|[/{,*])\.?(env(?!\.(example|sample|template|dist)\b)|ssh|aws|gnupg|netrc)\b|\.(pem|key|p12|pfx)\b|id_(rsa|ed25519)", value, re.IGNORECASE
-        )):
+    if tool in {"Grep", "Glob"}:
+        selector = tool_input.get("glob") if tool == "Grep" else tool_input.get("pattern")
+        root = _resolve(str(tool_input.get("path") or "."), cwd) or cwd
+        if isinstance(selector, str) and selector and _glob_selects_secret(selector, root):
             return _deny("secret and credential files are off limits, also by glob")
     for key in PATH_KEYS:
         value = tool_input.get(key)

@@ -233,9 +233,21 @@ def main() -> int:
         assert tool("Read", cwd, file_path=str(cwd / ".env"))
         assert tool("Read", cwd, file_path="/home/someone/.ssh/id_ed25519")
         assert tool("Grep", cwd, path="/home/someone/.config")
+        (cwd / "infra").mkdir()
+        (cwd / "infra" / ".env").write_text("X=1")
+        (cwd / "infra" / "app.py").write_text("x")
+        (cwd / ".env.example").write_text("X=")
+        assert tool("Grep", cwd, path=str(cwd), glob="**/.e[n]v", pattern=".")
+        assert tool("Grep", cwd, path=str(cwd), glob="**/{.e,x}nv", pattern=".")
+        assert tool("Grep", cwd, path=str(cwd), glob=".?nv", pattern=".")
+        assert tool("Glob", cwd, path=str(cwd), pattern="infra/.*")
+        assert tool("Grep", cwd, path=str(cwd), glob="infra/*.py", pattern=".") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/.env", pattern=".")
         assert tool("Grep", cwd, path=str(cwd), glob="*.{env,pem}", pattern=".")
-        assert tool("Glob", cwd, pattern="**/id_rsa*")
+        assert tool("Glob", cwd, pattern="**/id_rsa*") is None, "nothing secret matches"
+        (cwd / "keys").mkdir()
+        (cwd / "keys" / "id_rsa").write_text("k")
+        assert tool("Glob", cwd, pattern="**/id_[r]sa")
         assert tool("Grep", cwd, path=str(cwd), glob="**/*.py", pattern="environ") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/.env.example", pattern=".") is None
         assert tool("Read", cwd, file_path=str(cwd / "src" / "app.py")) is None
