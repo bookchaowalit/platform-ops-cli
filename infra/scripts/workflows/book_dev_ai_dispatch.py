@@ -381,9 +381,12 @@ URL_CREDENTIAL_RE = re.compile(r"://[^\s/]*@")  # any userinfo before the host
 CLAUDE_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
 
 
-def provider_env(provider: str) -> dict[str, str] | None:
-    """Claude builds without the dispatcher's push, deploy and cloud credentials; others inherit."""
-    if provider != "claude":
+def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
+    """A Claude worktree build runs without push, deploy and cloud credentials.
+
+    The legacy single-provider flow (guard ``release``) pushes and deploys itself, so it
+    and the other providers inherit the environment."""
+    if provider != "claude" or guard != "branch":
         return None
     return {
         name: value for name, value in os.environ.items()
@@ -452,7 +455,7 @@ def run_provider(
             command,
             input=stdin_data,
             cwd=str(cwd),
-            env=provider_env(provider),
+            env=provider_env(provider, guard),
             capture_output=True,
             text=True,
             timeout=timeout_sec,

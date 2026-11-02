@@ -106,7 +106,7 @@ GIT_BRANCH_DENY = {"push", "switch", "merge", "tag", "worktree", "remote", "filt
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 CURL_VALUE_SHORT = set("oHuAewmxbcKErYyzCPQUDJ")
 CONTROL_OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;", "\n"}
-SUBST_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+BACKTICK_RE = re.compile(r"`([^`]*)`")
 
 
 def _deny(reason: str) -> str:
@@ -114,7 +114,10 @@ def _deny(reason: str) -> str:
 
 
 class _Ctx:
-    """Where a shell command runs: the permitted root and the directory after any `cd`."""
+    """Where a shell command runs: the permitted root and the directory after any `cd`.
+
+    A `cd` inside `( ... )`, `$( ... )`, backticks or `bash -c` does not move the outer
+    shell, so those scopes save and restore ``here``."""
 
     def __init__(self, root: Path, policy: str) -> None:
         self.root = root
@@ -181,9 +184,14 @@ def _tokens(command: str) -> list[str]:
 
 
 def _segments(tokens: list[str]) -> list[list[str]]:
+    """Simple commands, with "(" / ")" marker entries where a subshell opens and closes."""
     segments: list[list[str]] = [[]]
     for token in tokens:
-        if token in CONTROL_OPS:
+        # shlex groups adjacent punctuation (`);`, `&&(`), so any run of control characters splits.
+        if token in CONTROL_OPS or (token and set(token) <= set(";&|()")):
+            for char in token:
+                if char in "()":
+                    segments += [[char], []]
             segments.append([])
         else:
             segments[-1].append(token)
@@ -383,7 +391,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     if ctx.policy == "branch" and any(GIT_ENV_RE.match(word) for word in argv):
         return "git environment overrides (config, ssh, hooks, editor) are not allowed"
     for word in argv:
-        if ("/" in word or word.startswith((".", "~"))) and _secret_resolved(word.split("=", 1)[-1], ctx.here):
+        if ("/" in word or word.startswith((".", "~"))) and _secret_resolved(
+            word.split("=", 1)[-1], ctx.here
+        ):
             return "the command touches a secret or credential path"
     problems: list[str] = []
     argv = _strip_prefix(words, problems)
@@ -399,9 +409,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     positional = [item for item in args if not item.startswith("-")]
     if program in {"cd", "pushd"}:
         target = _resolve(positional[0], ctx.here) if positional else None
-        if not _within(target, ctx.root):
+        if target is None or not _within(target, ctx.root):
             return "stay inside the working directory (cd)"
-        ctx.here = target  # type: ignore[assignment]
+        ctx.here = target
         return None
     if program in ESCALATE:
         return f"{program} is not allowed"
@@ -413,7 +423,10 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
                 if item.lower() in {"-encodedcommand", "-ec"}:
                     return "encoded PowerShell commands cannot be checked"
                 if j + 1 < len(args):
-                    return _command_reason(args[j + 1], ctx, depth + 1)
+                    saved = ctx.here
+                    reason = _command_reason(args[j + 1], ctx, depth + 1)
+                    ctx.here = saved
+                    return reason
         return None
     if program == "eval" and args:
         return _command_reason(" ".join(args), ctx, depth + 1)
@@ -440,7 +453,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         return f"{program} {positional[0]} runs a release or cloud CLI"
     if program == "rm" and any(re.fullmatch(r"-[a-zA-Z]*[rR][a-zA-Z]*|--recursive", item) for item in args):
         targets = [item for item in args if not item.startswith("-")]
-        if not targets or any(item in {"*", ".", "./"} or not _within(_resolve(item, ctx.here), ctx.root) for item in targets):
+        if not targets or any(
+            item in {"*", ".", "./"} or not _within(_resolve(item, ctx.here), ctx.root) for item in targets
+        ):
             return "recursive rm is limited to paths inside the working directory"
     targets: list[str] = []
     if program in {"tee", "touch", "mkdir", "truncate", "rmdir", "unlink", "rm", "chmod", "chown", "shred"}:
@@ -507,6 +522,25 @@ def _outside_single_quotes(command: str) -> str:
     return "".join(out)
 
 
+def _substitutions(text: str) -> list[str]:
+    """Bodies of `$( ... )` with balanced parentheses, outermost first, plus backtick bodies."""
+    bodies: list[str] = []
+    start = text.find("$(")
+    while start != -1:
+        depth, i = 0, start + 1
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        bodies.append(text[start + 2:i])
+        start = text.find("$(", start + 2)
+    return bodies + [match.group(1) for match in BACKTICK_RE.finditer(text)]
+
+
 def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     if depth > 4:
         return "nested shells are too deep to check"
@@ -515,14 +549,33 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     if SECRET_ENV_RE.search(command):
         return "the command reads a credential-named environment variable"
     # The shell keeps single-quoted text literal: `$(...)` and backticks there are not run.
-    # Here-docs and $'...' quoting are not modelled, so those commands are checked raw.
+    # Here-docs and $'...' quoting are not modelled: with a substitution present, deny.
+    if ("<<" in command or "$'" in command) and ("$(" in command or "`" in command) and ctx.policy == "branch":
+        return "here-docs or $'...' with command substitution cannot be checked; write the file with the Write tool"
     live = command if ("<<" in command or "$'" in command) else _outside_single_quotes(command)
-    for match in SUBST_RE.finditer(live):
-        reason = _command_reason(match.group(1) or match.group(2) or "", ctx, depth + 1)
+    for body in _substitutions(live):
+        saved = ctx.here
+        reason = _command_reason(body, ctx, depth + 1)
+        ctx.here = saved
         if reason:
             return reason
-    unquoted_ticks = "".join(" ; " if char == "`" and live[i] == "`" else char for i, char in enumerate(command))
-    for segment in _segments(_tokens(unquoted_ticks)):
+    # Unquoted backticks open and close a subshell scope, like `$( ... )`.
+    chars: list[str] = []
+    opening = True
+    for i, char in enumerate(command):
+        if char == "`" and live[i] == "`":
+            chars.append(" ( " if opening else " ) ")
+            opening = not opening
+        else:
+            chars.append(char)
+    scopes: list[Path] = []
+    for segment in _segments(_tokens("".join(chars))):
+        if segment == ["("]:
+            scopes.append(ctx.here)
+            continue
+        if segment == [")"]:
+            ctx.here = scopes.pop() if scopes else ctx.here
+            continue
         reason = _segment_reason(segment, ctx, depth)
         if reason:
             return reason

@@ -405,6 +405,7 @@ def main() -> int:
                 assert "RAILWAY_PROJECT_ID" not in env and "SENTRY_DSN" not in env and env["JAVA_HOME"] == "/j"
                 assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "PATH" in env
                 assert provider_env("codex") is None
+                assert provider_env("claude", "release") is None, "the legacy flow keeps its release credentials"
             assert run.call_args.kwargs["cwd"] == str(tmp / "repo")
 
     # Claude CLI lookup: explicit override, then the desktop app's newest build.
