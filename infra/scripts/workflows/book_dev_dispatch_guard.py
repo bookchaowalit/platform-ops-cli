@@ -358,6 +358,15 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
             continue
         words.append(token)
         i += 1
+    if ctx.policy == "branch":
+        for k, word in enumerate(argv):
+            if os.path.basename(word) != "env":
+                continue
+            for opt in argv[k + 1:]:  # env's own options and assignments, up to the program
+                if not (opt.startswith("-") or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", opt)):
+                    break
+                if opt.split("=", 1)[0] == "--chdir" or re.fullmatch(r"-[A-Za-z]*C.*", opt):
+                    return "env --chdir is not allowed; cd inside the working directory instead"
     if ctx.policy == "branch" and any(GIT_ENV_RE.match(word) for word in argv):
         return "git environment overrides (config, ssh, hooks, editor) are not allowed"
     for word in argv:
