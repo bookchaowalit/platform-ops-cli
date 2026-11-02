@@ -583,43 +583,65 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
 
 
 GLOB_WALK_LIMIT = 50000
+GLOB_MAX_PATTERNS = 64
+# Glob syntax the Python matcher below does not model the way ripgrep does.
+GLOB_UNMODELLED_RE = re.compile(r"\[[!^]|\\|\s|\{[^}]*\{")
 
 
-def _expand_braces(pattern: str) -> list[str]:
+def _expand_braces(pattern: str, budget: list[int]) -> list[str]:
     match = re.search(r"\{([^{}]*)\}", pattern)
     if not match:
         return [pattern]
     head, tail = pattern[: match.start()], pattern[match.end():]
-    return [item for option in match.group(1).split(",") for item in _expand_braces(head + option + tail)]
+    out: list[str] = []
+    for option in match.group(1).split(","):
+        budget[0] -= 1
+        if budget[0] < 0:
+            raise ValueError("too many brace expansions")
+        out += _expand_braces(head + option + tail, budget)
+    return out
 
 
 def _glob_selects_secret(selector: str, root: Path) -> bool:
-    """Whether a Grep/Glob glob matches any secret file under ``root``, hidden files included.
+    """Whether a Grep/Glob glob could select a secret file under ``root``.
 
-    The glob is matched against the real files rather than inspected as text, so
-    `.e[n]v` or `{.e,x}nv` cannot dodge a name check. Past GLOB_WALK_LIMIT files, or
-    without a readable root, it falls back to denying globs that could name a secret."""
+    The glob is matched against the real files (hidden files included, symlinked
+    directories followed once) rather than inspected as text, so `.e[n]v` or
+    `{.e,x}nv` cannot dodge a name check. It fails closed: syntax the matcher does
+    not model, too many brace expansions, an unreadable root or more than
+    GLOB_WALK_LIMIT files deny any glob with a wildcard."""
     if SECRET_PATH_RE.search(" " + selector + " "):
         return True
-    patterns = [p if "/" in p else f"**/{p}" for p in _expand_braces(selector)]
+    wildcard = bool(re.search(r"[*?\[\]{}]", selector))
+    if GLOB_UNMODELLED_RE.search(selector) or ("," in selector and "{" not in selector):
+        return True
     try:
+        patterns = [p if "/" in p else f"**/{p}" for p in _expand_braces(selector, [GLOB_MAX_PATTERNS])]
         if not root.is_dir():
-            raise OSError
+            return wildcard
         seen = 0
-        for directory, dirs, files in os.walk(root):
+        for directory, dirs, files in os.walk(root, followlinks=True):
+            here = Path(directory)
+            real = here.resolve()
+            # Stop only on a real cycle (a directory inside itself); the same target
+            # reached by another path is walked again, since globs match by path.
+            if any(parent.resolve() == real for parent in here.parents if root in parent.parents or parent == root):
+                dirs[:] = []
+                continue
             dirs[:] = [name for name in dirs if name != ".git"]
             for name in files:
                 seen += 1
                 if seen > GLOB_WALK_LIMIT:
-                    raise OSError
-                relative = PurePosixPath(Path(directory, name).relative_to(root).as_posix())
+                    return wildcard
                 full = Path(directory, name)
+                relative = PurePosixPath(full.relative_to(root).as_posix())
                 if any(relative.full_match(p) for p in patterns) and (
                     SECRET_PATH_RE.search(" " + full.as_posix() + " ") or _secret_resolved(str(full), root)
+                    or _secret_resolved(str(full.resolve()), root)
                 ):
                     return True
-    except (OSError, ValueError):
-        return bool(re.search(r"[\[\]?{}]|(^|/)\.|env|pem|key|id_", selector, re.IGNORECASE))
+    except (OSError, ValueError, RuntimeError):
+        return wildcard
     return False
 
 

@@ -242,6 +242,12 @@ def main() -> int:
         assert tool("Grep", cwd, path=str(cwd), glob=".?nv", pattern=".")
         assert tool("Glob", cwd, path=str(cwd), pattern="infra/.*")
         assert tool("Grep", cwd, path=str(cwd), glob="infra/*.py", pattern=".") is None
+        assert tool("Grep", cwd, path=str(cwd), glob="**/.[!x]nv", pattern=".")  # unmodelled syntax fails closed
+        assert tool("Grep", cwd, path=str(cwd), glob="**/" + "{a,b}" * 8, pattern=".")  # brace bomb
+        (cwd / "linked").symlink_to(cwd / "infra", target_is_directory=True)
+        assert tool("Glob", cwd, path=str(cwd), pattern="linked/.*"), "a symlinked dir is walked by its own path"
+        (cwd / "infra" / "loop").symlink_to(cwd, target_is_directory=True)
+        assert tool("Grep", cwd, path=str(cwd), glob="**/*.py", pattern=".") is None, "a symlink cycle terminates"
         assert tool("Grep", cwd, path=str(cwd), glob="**/.env", pattern=".")
         assert tool("Grep", cwd, path=str(cwd), glob="*.{env,pem}", pattern=".")
         assert tool("Glob", cwd, pattern="**/id_rsa*") is None, "nothing secret matches"
