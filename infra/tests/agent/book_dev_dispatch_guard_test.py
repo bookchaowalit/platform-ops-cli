@@ -172,6 +172,10 @@ def main() -> int:
             "git init",
             "env -C ../other-repo git commit -am x",
             "env --chdir=/elsewhere make",
+            "env --ch=/elsewhere make",
+            "env -iC/elsewhere make",
+            "env -S 'git push origin HEAD'",
+            "env --split-string='gh pr create'",
             "git -C ../other-repo commit -am x",
             "EDITOR='sh -c x' git commit",
             "printf x > .git/hooks/pre-push",
@@ -182,7 +186,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "env CI=1 make -C build", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
+        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
         assert bash("git push --force-with-lease=refs/heads/main:abc origin main", cwd, "release")
         assert bash("git push -uf origin main", cwd, "release")
