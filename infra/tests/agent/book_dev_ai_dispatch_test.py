@@ -383,9 +383,11 @@ def main() -> int:
             # The builder runs without push/deploy credentials but keeps its own login.
             with mock.patch.dict(os.environ, {"GH_TOKEN": "x", "VERCEL_TOKEN": "x", "SSH_AUTH_SOCK": "/s",
                                               "RAILWAY_PROJECT_ID": "x", "SENTRY_DSN": "x", "JAVA_HOME": "/j",
+                                              "APP_URL": "https://u:p@db.example/x", "KUBECONFIG": "/k",
                                               "CLAUDE_CODE_OAUTH_TOKEN": "c", "PATH": os.environ.get("PATH", "")}):
                 env = provider_env("claude")
                 assert "GH_TOKEN" not in env and "VERCEL_TOKEN" not in env and "SSH_AUTH_SOCK" not in env
+                assert "APP_URL" not in env and "KUBECONFIG" not in env
                 assert "RAILWAY_PROJECT_ID" not in env and "SENTRY_DSN" not in env and env["JAVA_HOME"] == "/j"
                 assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "PATH" in env
                 assert provider_env("codex") is None

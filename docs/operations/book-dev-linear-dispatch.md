@@ -37,7 +37,7 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 - Policy `branch` อนุญาต git เฉพาะ subcommand ในรายการ (add, commit, diff, log, stash, rebase …) ห้าม alias, `git -c`, `git config`, ตัวแปร `GIT_CONFIG*`/`GIT_SSH*`/`GIT_DIR` … และ option ที่สั่งรันโปรแกรมอื่น (`rebase --exec`, `--upload-pack`, `--ext-diff`) เพื่อไม่ให้เปลี่ยน hook, remote หรือ credential ที่ dispatcher จะใช้ตอน push (dispatcher เองก็ push ด้วย `-c core.hooksPath=/dev/null`)
 - Claude builder รันโดยตัดตัวแปร env ที่ชื่อเป็น credential ออก (`*_TOKEN`, `*_API_KEY`, `*AUTH*`, `*_DSN`, `SSH_AUTH_SOCK` และ prefix ของผู้ให้บริการ เช่น `GH_`, `VERCEL_`, `RAILWAY_`, `AWS_` …; ใช้ denylist เพราะ build ต้องใช้ env ของ toolchain) เหลือแค่ login ของ Claude เอง
 - ทดสอบสดแล้ว 2026-11-02: push, `gh` และการเขียน `AGENTS.md` ถูกบล็อก ส่วน `git status` และการเขียนไฟล์ปกติผ่าน
-ข้อจำกัดที่เหลือ: guard ตรวจจากข้อความคำสั่ง ไม่ใช่ sandbox ระดับ OS โปรแกรมที่ตั้งใจหลบ (เช่น สคริปต์ที่ builder เขียนเองแล้วสั่งรัน) ยังเลี่ยงได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
+ข้อจำกัดที่เหลือ: guard ตรวจจากข้อความคำสั่ง ไม่ใช่ sandbox ระดับ OS (security review รอบหลัง ๆ เจอเพียงรูปแบบ option ที่แปลกขึ้นเรื่อย ๆ ถ้าต้องการขอบเขตแข็งจริงต้องรัน builder ใน OS sandbox เช่น bubblewrap หรือ sandbox ของ Claude Code โดยไม่มี credential ใน HOME) โปรแกรมที่ตั้งใจหลบ (เช่น สคริปต์ที่ builder เขียนเองแล้วสั่งรัน) ยังเลี่ยงได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)
 
 ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ

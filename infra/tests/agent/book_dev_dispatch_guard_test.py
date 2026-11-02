@@ -164,6 +164,15 @@ def main() -> int:
             "GIT_SSH_COMMAND='ssh -i k' git fetch",
             "GIT_CONFIG_GLOBAL=/tmp/c git status",
             "export GIT_DIR=/elsewhere && git status",
+            "git rebase --exe=./x.sh origin/main",
+            "git rebase -ix ./x.sh origin/main",
+            "git fetch -qu x origin",
+            "git grep -O foo",
+            "git --git-dir=/elsewhere/.git log",
+            "git init",
+            "git -C ../other-repo commit -am x",
+            "EDITOR='sh -c x' git commit",
+            "printf x > .git/hooks/pre-push",
             "cat /proc/self/environ",
             "cat " + "../" * 30 + "home/someone/.config/gh/hosts.yml",
             "cat " + str(Path.home() / ".ssh" / "config"),
@@ -171,7 +180,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("GIT_PAGER=cat git log -1", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
+        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
         assert bash("git push --force-with-lease=refs/heads/main:abc origin main", cwd, "release")
         assert bash("git push -uf origin main", cwd, "release")

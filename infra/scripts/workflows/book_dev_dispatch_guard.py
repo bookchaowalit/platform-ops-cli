@@ -87,17 +87,20 @@ PUBLISH_VERBS = {"publish", "push", "login", "deprecate", "unpublish", "owner", 
 GIT_BRANCH_ALLOW = {
     "add", "am", "apply", "blame", "branch", "cat-file", "check-attr", "check-ignore", "checkout",
     "cherry", "cherry-pick", "commit", "describe", "diff", "diff-files", "diff-index", "diff-tree",
-    "fetch", "format-patch", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "merge-base",
+    "fetch", "format-patch", "grep", "help", "log", "ls-files", "ls-remote", "ls-tree", "merge-base",
     "mv", "name-rev", "notes", "range-diff", "rebase", "reflog", "reset", "restore", "rev-list", "rev-parse",
     "revert", "rm", "shortlog", "show", "show-ref", "stash", "status", "symbolic-ref", "var",
     "version", "whatchanged",
 }
 # Options of allowed subcommands that run an arbitrary program.
-GIT_EXEC_OPTS = {"-x", "--exec", "--upload-pack", "--receive-pack", "--ext-diff", "--textconv"}
+GIT_EXEC_OPTS = {"--exec", "--upload-pack", "--receive-pack", "--ext-diff", "--textconv", "--open-files-in-pager"}
+# Short forms per subcommand: rebase -x, fetch/ls-remote -u, grep -O (also inside clusters such as -ux).
+GIT_EXEC_SHORT = {"rebase": "x", "fetch": "u", "ls-remote": "u", "grep": "O"}
 # Environment overrides that change which config, hooks, ssh or editor git runs.
 GIT_ENV_RE = re.compile(
     r"^(GIT_CONFIG\w*|GIT_SSH\w*|GIT_EXEC_PATH|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS"
     r"|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_TEMPLATE_DIR|GIT_INDEX_FILE)="
+    r"|^(EDITOR|VISUAL|PAGER|GIT_PAGER|LESSOPEN|LESSCLOSE)=(?!(cat|true|:|less|more)?$)"
 )
 GIT_BRANCH_DENY = {"push", "switch", "merge", "tag", "worktree", "remote", "filter-branch", "filter-repo", "update-ref"}
 GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
@@ -155,6 +158,8 @@ def _write_reason(path: str, ctx: _Ctx) -> str | None:
         return None
     if not _within(resolved, ctx.root):
         return "writes are limited to the working directory"
+    if ".git" in resolved.relative_to(ctx.root).parts:
+        return "git metadata (config, hooks) is not writable"
     if ctx.policy == "branch" and AGENT_INSTRUCTION_RE.search(resolved.relative_to(ctx.root).as_posix()):
         return "agent instruction files go to the owner, not the builder"
     return None
@@ -221,6 +226,8 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     while i < len(args) and args[i].startswith("-"):
         if policy == "branch" and (args[i] == "-c" or args[i].startswith(("-c", "--config-env"))):
             return "git -c overrides (hooks, aliases, remotes, credentials) are not allowed"
+        if policy == "branch" and args[i].split("=", 1)[0] in {"--git-dir", "--work-tree", "--exec-path", "--namespace"}:
+            return "git must run on this worktree's own repository"
         i += 2 if args[i] in GIT_VALUE_OPTS else 1
     if i >= len(args):
         return None
@@ -242,7 +249,14 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     if policy == "branch":
         if sub not in GIT_BRANCH_ALLOW or sub in GIT_BRANCH_DENY:
             return f"git {sub} is not on the builder's list; commit on this branch only"
-        if GIT_EXEC_OPTS & {item.split("=", 1)[0] for item in rest} or (sub in {"fetch", "ls-remote"} and "-u" in rest):
+        long_opts = {item.split("=", 1)[0] for item in rest if item.startswith("--") and len(item) > 2}
+        # Git accepts unambiguous prefixes (`--exe`), so a prefix of an exec option counts too.
+        prefixed = any(len(opt) >= 4 and any(full.startswith(opt) for full in GIT_EXEC_OPTS) for opt in long_opts)
+        short_exec = GIT_EXEC_SHORT.get(sub)
+        clustered = short_exec is not None and any(
+            item.startswith("-") and not item.startswith("--") and short_exec in item[1:] for item in rest
+        )
+        if prefixed or clustered:
             return f"git {sub} options that run another program are not allowed"
         output = next((item.split("=", 1)[1] for item in rest if item.startswith("--output=")), None)
         if output is None and "--output" in rest and rest.index("--output") + 1 < len(rest):
@@ -384,6 +398,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     ):
         return "reading environment variables can expose credentials"
     if program == "git":
+        for k, item in enumerate(args[:-1]):
+            if item == "-C" and policy == "branch" and not _within(_resolve(args[k + 1], ctx.here), ctx.root):
+                return "git -C must stay inside the working directory"
         return _git_reason(args, policy)
     # `npx`-style runners execute a binary; `npm run <script>` names a package script.
     runs_binary = {"npm": {"exec", "x"}, "pnpm": {"exec", "dlx"}, "yarn": {"exec", "dlx"}, "bun": {"x"}, "uv": {"run"}}
