@@ -441,11 +441,17 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     ):
         return "reading environment variables can expose credentials"
     if program == "git":
-        for k, item in enumerate(args):
-            # `-C dir` and the attached `-Cdir` form.
+        # Global `-C dir` / `-Cdir` options apply cumulatively, as git does (`-C sub -C ../..`).
+        base: Path | None = ctx.here
+        k = 0
+        while k < len(args) and args[k].startswith("-"):
+            item = args[k]
             target = args[k + 1] if item == "-C" and k + 1 < len(args) else item[2:] if item.startswith("-C") and len(item) > 2 else None
-            if target is not None and policy == "branch" and not _within(_resolve(target, ctx.here), ctx.root):
-                return "git -C must stay inside the working directory"
+            if target is not None:
+                base = _resolve(target, base) if base is not None else None
+                if policy == "branch" and not _within(base, ctx.root):
+                    return "git -C must stay inside the working directory"
+            k += 2 if item in GIT_VALUE_OPTS else 1
         return _git_reason(args, policy)
     # `npx`-style runners execute a binary; `npm run <script>` names a package script.
     runs_binary = {"npm": {"exec", "x"}, "pnpm": {"exec", "dlx"}, "yarn": {"exec", "dlx"}, "bun": {"x"}, "uv": {"run"}}
@@ -646,7 +652,7 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out) + r"\Z", re.DOTALL)
 
 
-def _glob_selects_secret(selector: str, root: Path) -> bool:
+def _glob_selects_secret(selector: str, root: Path, cwd: Path | None = None) -> bool:
     """Whether a Grep/Glob glob could select a secret file under ``root``.
 
     The glob is matched against the real files (hidden files included, symlinked
@@ -658,13 +664,16 @@ def _glob_selects_secret(selector: str, root: Path) -> bool:
         return True
     if GLOB_UNMODELLED_RE.search(selector) or ("," in selector and "{" not in selector):
         return True
-    # ripgrep reads a leading `/` as "anchored at the search root"; a copy of the root's
-    # own absolute path is reduced to that form.
-    if selector.startswith(str(root) + "/"):
-        selector = "/" + selector[len(str(root)) + 1:]
+    # A glob may be anchored at the search root or at the session cwd, depending on the
+    # tool, so each file is matched relative to both; an absolute glob under either
+    # base is reduced to the anchored form for that base.
+    bases = list(dict.fromkeys(base for base in (root, cwd) if base is not None))
+    selectors = {base: "/" + selector[len(str(base)) + 1:] if selector.startswith(str(base) + "/") else selector
+                 for base in bases}
     deadline = time.monotonic() + GLOB_WALK_SECONDS
     try:
-        patterns = [_glob_regex(p) for p in _expand_braces(selector, [GLOB_MAX_PATTERNS])]
+        patterns = {base: [_glob_regex(p) for p in _expand_braces(selectors[base], [GLOB_MAX_PATTERNS])]
+                    for base in bases}
         if not root.is_dir():
             return True
         seen = 0
@@ -682,8 +691,8 @@ def _glob_selects_secret(selector: str, root: Path) -> bool:
                 return True
             for name in files:
                 full = here / name
-                relative = full.relative_to(root).as_posix()
-                if any(p.match(relative) for p in patterns) and (
+                relatives = {base: Path(os.path.relpath(full, base)).as_posix() for base in bases}
+                if any(p.match(relatives[base]) for base in bases for p in patterns[base]) and (
                     SECRET_PATH_RE.search(" " + full.as_posix() + " ") or _secret_resolved(str(full), root)
                     or _secret_resolved(str(full.resolve()), root)
                 ):
@@ -708,7 +717,7 @@ def decide(payload: dict, policy: str) -> str | None:
     if tool in {"Grep", "Glob"}:
         selector = tool_input.get("glob") if tool == "Grep" else tool_input.get("pattern")
         root = _resolve(str(tool_input.get("path") or "."), cwd) or cwd
-        if isinstance(selector, str) and selector and _glob_selects_secret(selector, root):
+        if isinstance(selector, str) and selector and _glob_selects_secret(selector, root, cwd):
             return _deny("secret and credential files are off limits, also by glob")
     for key in PATH_KEYS:
         value = tool_input.get(key)

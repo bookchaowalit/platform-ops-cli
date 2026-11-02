@@ -188,6 +188,8 @@ def main() -> int:
             "echo $'it\\'s' $(git push)",
             "git -C ../other-repo commit -am x",
             "git -C../other-repo commit -am x",
+            "git -C src -C ../.. commit -am x",
+            "git -Csrc -C../../x status",
             "git symbolic-ref HEAD refs/heads/main",
             "git symbolic-ref -d HEAD",
             "EDITOR='sh -c x' git commit",
@@ -199,7 +201,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
+        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git -C src -C .. status", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
                         "git commit -m 'note $(gh pr create) is the dispatcher step'", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
@@ -253,6 +255,9 @@ def main() -> int:
         assert tool("Grep", cwd, path=str(cwd), glob="!*.py", pattern=".")  # negation fails closed
         assert tool("Grep", cwd, path=str(cwd), glob="infra/", pattern=".")  # directory form fails closed
         assert tool("Grep", cwd, path=str(cwd), glob="/infra/*.py", pattern=".") is None
+        # Anchored at the session cwd rather than at `path`: still matched.
+        assert tool("Grep", cwd, path=str(cwd / "infra"), glob="/infra/.e?v", pattern=".")
+        assert tool("Grep", cwd, path=str(cwd / "infra"), glob=str(cwd) + "/infra/.e*", pattern=".")
         (cwd / "linked").symlink_to(cwd / "infra", target_is_directory=True)
         assert tool("Glob", cwd, path=str(cwd), pattern="linked/.*"), "a symlinked dir is walked by its own path"
         (cwd / "infra" / "loop").symlink_to(cwd, target_is_directory=True)
