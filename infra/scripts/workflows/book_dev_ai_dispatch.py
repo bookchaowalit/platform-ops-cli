@@ -49,7 +49,7 @@ SUPPORTED_PROVIDERS = {"grok", "codex", "claude"}
 # Claude Code settings, so every run gets book_dev_dispatch_guard.py as its
 # PreToolUse hook (secrets, destructive commands, and in a worktree branch any
 # push, PR, deploy or cloud CLI).
-CLAUDE_IMPLEMENT_TOOLS = "Read,Grep,Glob,Edit,Write,Bash,PowerShell"
+CLAUDE_IMPLEMENT_TOOLS = "Read,Grep,Glob,Edit,Write,Bash"  # no PowerShell: the guard parses POSIX shell only
 CLAUDE_PLAN_TOOLS = "Read,Grep,Glob"
 CLAUDE_CLI_ENV = "BOOK_DEV_CLAUDE_CLI"
 GUARD_SCRIPT = WORKFLOW_DIR / "book_dev_dispatch_guard.py"

@@ -278,6 +278,10 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     if sub == "branch" and ({"D", "d", "m", "M", "f"} & set(short) or longs & {"--delete", "--move", "--force"}):
         return "deleting, renaming or forcing branches is not allowed"
     if policy == "branch":
+        if sub == "symbolic-ref" and (
+            [item for item in rest if not item.startswith("-")][1:] or {"-d", "--delete", "-m"} & set(rest)
+        ):
+            return "git symbolic-ref may only read HEAD; repointing it is the dispatcher's step"
         if sub not in GIT_BRANCH_ALLOW or sub in GIT_BRANCH_DENY:
             return f"git {sub} is not on the builder's list; commit on this branch only"
         long_opts = {item.split("=", 1)[0] for item in rest if item.startswith("--") and len(item) > 2}
@@ -437,8 +441,10 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     ):
         return "reading environment variables can expose credentials"
     if program == "git":
-        for k, item in enumerate(args[:-1]):
-            if item == "-C" and policy == "branch" and not _within(_resolve(args[k + 1], ctx.here), ctx.root):
+        for k, item in enumerate(args):
+            # `-C dir` and the attached `-Cdir` form.
+            target = args[k + 1] if item == "-C" and k + 1 < len(args) else item[2:] if item.startswith("-C") and len(item) > 2 else None
+            if target is not None and policy == "branch" and not _within(_resolve(target, ctx.here), ctx.root):
                 return "git -C must stay inside the working directory"
         return _git_reason(args, policy)
     # `npx`-style runners execute a binary; `npm run <script>` names a package script.
@@ -693,6 +699,8 @@ def decide(payload: dict, policy: str) -> str | None:
     tool = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
     cwd = Path(payload.get("cwd") or os.getcwd()).resolve()
+    if tool == "PowerShell" and policy == "branch":
+        return _deny("PowerShell commands cannot be checked; use Bash")
     if tool in SHELL_TOOLS:
         reason = _command_reason(str(tool_input.get("command") or ""), _Ctx(cwd, policy))
         return _deny(reason) if reason else None

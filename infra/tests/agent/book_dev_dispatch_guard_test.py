@@ -187,6 +187,9 @@ def main() -> int:
             "cat <<EOF > notes.txt\nit's $(gh pr create --fill)\nEOF",
             "echo $'it\\'s' $(git push)",
             "git -C ../other-repo commit -am x",
+            "git -C../other-repo commit -am x",
+            "git symbolic-ref HEAD refs/heads/main",
+            "git symbolic-ref -d HEAD",
             "EDITOR='sh -c x' git commit",
             "printf x > .git/hooks/pre-push",
             "cat /proc/self/environ",
@@ -196,7 +199,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
+        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
                         "git commit -m 'note $(gh pr create) is the dispatcher step'", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
@@ -271,6 +274,9 @@ def main() -> int:
         assert tool("Write", cwd, file_path=str(cwd / "AGENTS.override.md"))
         assert tool("Write", cwd, file_path=str(cwd / ".claude" / "settings.json"))
         assert tool("Write", cwd, "release", file_path=str(cwd / "AGENTS.md")) is None
+
+        assert tool("PowerShell", cwd, command="Get-ChildItem")
+        assert tool("PowerShell", cwd, "release", command="Get-ChildItem") is None
 
         # Hook protocol: deny JSON on stdout, silence on allow, fail closed on bad input.
         def run(payload: str) -> subprocess.CompletedProcess:
