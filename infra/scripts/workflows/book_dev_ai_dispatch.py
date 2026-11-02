@@ -672,6 +672,10 @@ def build_review(
         if _git(worktree, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip() != branch:
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"builder left branch {branch}"}
+        if _git(worktree, "merge-base", "--is-ancestor", base, head).returncode != 0:
+            # An amend or rebase past the base would make the reviewed base..head diff differ from the PR.
+            flow["worktree_kept"] = True
+            return "failed", results, {**flow, "error": f"branch no longer descends from {base[:12]}"}
         changed = [path for path in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
         flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
         if flow["agent_instruction_files"]:

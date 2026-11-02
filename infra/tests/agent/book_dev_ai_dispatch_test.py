@@ -72,7 +72,8 @@ def git_repo(path: Path) -> None:
         subprocess.run(["git", "-C", str(path), *args], check=True)
 
 
-def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str, ...] = (), leave_dirty: bool = False):
+def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str, ...] = (), leave_dirty: bool = False,
+                  rewrite_base: bool = False):
     """Builder rounds commit a file; review rounds write the next verdict."""
 
     calls: list[dict] = []
@@ -95,6 +96,9 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
             (cwd / f"{label}.txt").write_text(label)
             subprocess.run(["git", "-C", str(cwd), "add", "--", f"{label}.txt", *files], check=True)
             subprocess.run(["git", "-C", str(cwd), "commit", "-q", "-m", label], check=True)
+            if rewrite_base:  # fold the work into an amended base commit
+                subprocess.run(["git", "-C", str(cwd), "reset", "-q", "--soft", "HEAD~1"], check=True)
+                subprocess.run(["git", "-C", str(cwd), "commit", "-q", "--amend", "-m", "rewritten"], check=True)
         if mode == "plan":
             last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
         return {"provider": provider, "status": "dispatched", "last_message": str(last)}
@@ -212,6 +216,16 @@ def build_review_tests(tmp: Path) -> None:
         ) as pr:
             report = dispatch(**common)
         assert report["status"] == "uncommitted_changes", report
+        assert [c["label"] for c in calls] == ["claude-build"] and report["flow"]["worktree_kept"]
+        pr.assert_not_called()
+
+        # A branch that no longer descends from the base would review a different diff than the PR.
+        run, calls = fake_provider([], rewrite_base=True)
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request"
+        ) as pr:
+            report = dispatch(**common)
+        assert report["status"] == "failed" and "no longer descends" in report["flow"]["error"], report
         assert [c["label"] for c in calls] == ["claude-build"] and report["flow"]["worktree_kept"]
         pr.assert_not_called()
 

@@ -190,14 +190,36 @@ def _segments(tokens: list[str]) -> list[list[str]]:
     return [segment for segment in segments if segment]
 
 
-def _strip_prefix(argv: list[str]) -> list[str]:
-    """Drop keywords, env assignments and wrappers so argv[0] is the real program."""
+def _env_option_reason(rest: list[str]) -> str | None:
+    """env may only set or unset variables; --chdir, --split-string and the rest are denied."""
+    while rest:
+        opt = rest[0]
+        if opt in {"-u", "--unset"}:
+            rest = rest[2:]
+        elif opt in {"-i", "--ignore-environment", "-"} or opt.startswith("--unset=") or re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]*=.*", opt
+        ):
+            rest = rest[1:]
+        elif opt.startswith("-"):
+            return f"env {opt} is not allowed; only VAR=value, -i and -u are"
+        else:
+            break
+    return None
+
+
+def _strip_prefix(argv: list[str], problems: list[str] | None = None) -> list[str]:
+    """Drop keywords, env assignments and wrappers so argv[0] is the real program.
+
+    ``problems`` collects option misuse of an ``env`` that is actually run (not an
+    argument such as ``rg env``)."""
     while argv:
         head = argv[0]
         name = os.path.basename(head)
         if head in SHELL_KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", head):
             argv = argv[1:]
         elif name in WRAPPERS and len(argv) > 1:
+            if name == "env" and problems is not None and (reason := _env_option_reason(argv[1:])):
+                problems.append(reason)
             takes_value = WRAPPERS[name]
             rest = argv[1:]
             while rest:
@@ -358,30 +380,15 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
             continue
         words.append(token)
         i += 1
-    if ctx.policy == "branch":
-        for k, word in enumerate(argv):
-            if os.path.basename(word) != "env":
-                continue
-            # env may only set or unset variables; --chdir, --split-string and the rest are denied.
-            rest = argv[k + 1:]
-            while rest:
-                opt = rest[0]
-                if opt in {"-u", "--unset"}:
-                    rest = rest[2:]
-                elif opt in {"-i", "--ignore-environment", "-"} or opt.startswith("--unset=") or re.fullmatch(
-                    r"[A-Za-z_][A-Za-z0-9_]*=.*", opt
-                ):
-                    rest = rest[1:]
-                elif opt.startswith("-"):
-                    return f"env {opt} is not allowed; only VAR=value, -i and -u are"
-                else:
-                    break
     if ctx.policy == "branch" and any(GIT_ENV_RE.match(word) for word in argv):
         return "git environment overrides (config, ssh, hooks, editor) are not allowed"
     for word in argv:
         if ("/" in word or word.startswith((".", "~"))) and _secret_resolved(word.split("=", 1)[-1], ctx.here):
             return "the command touches a secret or credential path"
-    argv = _strip_prefix(words)
+    problems: list[str] = []
+    argv = _strip_prefix(words, problems)
+    if ctx.policy == "branch" and problems:
+        return problems[0]
     if not argv or os.path.basename(argv[0]) in SKIP_SEGMENT:
         return None
     program = os.path.basename(argv[0]).lower()
@@ -477,6 +484,29 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     return None
 
 
+def _outside_single_quotes(command: str) -> str:
+    """The command with single-quoted text (and escaped characters) blanked, same length."""
+    out: list[str] = []
+    single = double = escaped = False
+    for char in command:
+        if escaped:
+            out.append(" ")
+            escaped = False
+        elif char == "\\" and not single:
+            out.append(" ")
+            escaped = True
+        elif char == "'" and not double:
+            single = not single
+            out.append(" ")
+        elif single:
+            out.append(" ")
+        else:
+            if char == '"':
+                double = not double
+            out.append(char)
+    return "".join(out)
+
+
 def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     if depth > 4:
         return "nested shells are too deep to check"
@@ -484,11 +514,14 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
         return "the command touches a secret or credential path"
     if SECRET_ENV_RE.search(command):
         return "the command reads a credential-named environment variable"
-    for match in SUBST_RE.finditer(command):
+    # The shell keeps single-quoted text literal: `$(...)` and backticks there are not run.
+    live = _outside_single_quotes(command)
+    for match in SUBST_RE.finditer(live):
         reason = _command_reason(match.group(1) or match.group(2) or "", ctx, depth + 1)
         if reason:
             return reason
-    for segment in _segments(_tokens(command.replace("`", " ; "))):
+    unquoted_ticks = "".join(" ; " if char == "`" and live[i] == "`" else char for i, char in enumerate(command))
+    for segment in _segments(_tokens(unquoted_ticks)):
         reason = _segment_reason(segment, ctx, depth)
         if reason:
             return reason
