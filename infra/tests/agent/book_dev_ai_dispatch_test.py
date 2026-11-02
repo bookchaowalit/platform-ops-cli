@@ -76,9 +76,9 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
 
     calls: list[dict] = []
 
-    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, isolated_review=False, **_):
+    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, isolated_review=False, guard="release", **_):
         calls.append({
-            "isolated": isolated_review, "dispatch_dir": dispatch_dir,
+            "isolated": isolated_review, "guard": guard, "dispatch_dir": dispatch_dir,
             "provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt,
             "prompt_file": prompt_file.read_text() if prompt_file else None,
             "detached": subprocess.run(["git", "-C", str(cwd), "symbolic-ref", "-q", "HEAD"], capture_output=True).returncode != 0,
@@ -170,6 +170,7 @@ def build_review_tests(tmp: Path) -> None:
         # Each review runs in its own detached checkout of the exact commit, removed afterwards.
         assert calls[1]["detached"] and calls[1]["cwd"] != calls[0]["cwd"] and not calls[1]["cwd"].exists()
         assert calls[1]["isolated"] and not calls[0]["isolated"]
+        assert {c["guard"] for c in calls if c["mode"] == "implement"} == {"branch"}, "builder runs under the branch guard"
         assert calls[0]["cwd"].parent not in calls[1]["cwd"].parents, "review checkout lives outside the builder's dirs"
         assert Path(report["flow"]["reviews"][0]["report"]).read_text().startswith("finding")
         assert victim.read_text() == "keep me" and not Path(report["flow"]["reviews"][0]["report"]).is_symlink()
@@ -319,6 +320,11 @@ def main() -> int:
                 assert command[command.index("--permission-prompts") + 1] == "none"
                 assert "--strict-mcp-config" in command
                 assert json.loads(command[command.index("--mcp-config") + 1]) == {"mcpServers": {}}
+                # Target repositories carry no Claude settings: the guard hook rides along.
+                hook = json.loads(command[command.index("--settings") + 1])["hooks"]["PreToolUse"][0]
+                assert hook["matcher"] == "*"
+                assert "book_dev_dispatch_guard.py" in hook["hooks"][0]["command"]
+                assert hook["hooks"][0]["command"].endswith("--policy release")
                 if mode == "plan":
                     assert "Edit" not in tools and "Bash" not in tools
                 else:

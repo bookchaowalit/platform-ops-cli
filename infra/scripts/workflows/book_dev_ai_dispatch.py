@@ -6,7 +6,7 @@ Safety defaults:
     - prompt requires scoped commit, push, documented deploy, and post-deploy
         verification after implementation checks; protected actions remain gated
   - provider sandboxes stay bounded (codex workspace-write / grok acceptEdits /
-    claude acceptEdits with an explicit tool allowlist and repository hooks)
+    claude acceptEdits with an explicit tool allowlist and the dispatch guard hook)
   - logs are written under data/runtime only
 
 Usage:
@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,11 +45,14 @@ DEFAULT_TICKET = (
 )
 DEFAULT_PROVIDERS = ("grok", "codex")
 SUPPORTED_PROVIDERS = {"grok", "codex", "claude"}
-# Claude Code tools for headless implementation. The repository PreToolUse
-# hook still denies secrets and destructive or production-capable commands.
+# Claude Code tools for headless implementation. Target repositories carry no
+# Claude Code settings, so every run gets book_dev_dispatch_guard.py as its
+# PreToolUse hook (secrets, destructive commands, and in a worktree branch any
+# push, PR, deploy or cloud CLI).
 CLAUDE_IMPLEMENT_TOOLS = "Read,Grep,Glob,Edit,Write,Bash,PowerShell"
 CLAUDE_PLAN_TOOLS = "Read,Grep,Glob"
 CLAUDE_CLI_ENV = "BOOK_DEV_CLAUDE_CLI"
+GUARD_SCRIPT = WORKFLOW_DIR / "book_dev_dispatch_guard.py"
 SKILL_FILE = SKILLS_ROOT / "book-dev-engineering-loop" / "SKILL.md"
 MODES = {"plan", "implement"}
 SUPPORTED_REVIEWERS = {"codex"}
@@ -263,6 +267,14 @@ def write_prompt_file(prompt: str, dispatch_dir: Path, name: str = "prompt.md") 
     return path
 
 
+def guard_settings(policy: str) -> str:
+    """Claude Code --settings JSON that runs the dispatch guard before every tool call."""
+    command = shlex.join([sys.executable, str(GUARD_SCRIPT), "--policy", policy])
+    return json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 30}]},
+    ]}})
+
+
 def build_provider_command(
     provider: str,
     *,
@@ -273,6 +285,7 @@ def build_provider_command(
     last_message_path: Path,
     read_dirs: tuple[Path, ...] = (),
     isolated_review: bool = False,
+    guard: str = "release",
 ) -> list[str]:
     if provider == "grok":
         cmd = resolve_grok_cmd()
@@ -346,6 +359,8 @@ def build_provider_command(
             "--strict-mcp-config",
             "--mcp-config",
             '{"mcpServers":{}}',
+            "--settings",
+            guard_settings(guard),
             "--max-turns",
             str(max_turns),
             "--output-format",
@@ -368,6 +383,7 @@ def run_provider(
     cwd: Path = PROJECT_ROOT,
     label: str | None = None,
     isolated_review: bool = False,
+    guard: str = "release",
 ) -> dict[str, Any]:
     name = label or provider
     log_path = dispatch_dir / f"{name}.log"
@@ -392,6 +408,7 @@ def run_provider(
             last_message_path=last_message_path,
             read_dirs=(dispatch_dir.parent.parent, SKILL_FILE.parent),
             isolated_review=isolated_review,
+            guard=guard,
         )
     except RuntimeError as exc:
         result["status"] = "unavailable"
@@ -561,7 +578,7 @@ def build_review(
         for provider, mode, label in ((builder, "implement", f"{builder}-build"), (reviewer, "plan", f"{reviewer}-review")):
             results.append(run_provider(
                 provider, prompt=prompt, prompt_file=prompt_file, mode=mode, dry_run=True,
-                cwd=repo_dir, label=label, isolated_review=mode == "plan", **common,
+                cwd=repo_dir, label=label, isolated_review=mode == "plan", guard="branch", **common,
             ))
         statuses = {item["status"] for item in results}
         return ("dry_run" if statuses == {"dry_run"} else "unavailable"), results, flow
@@ -593,7 +610,7 @@ def build_review(
         round_file = prompt_file if review is None else write_prompt_file(text, dispatch_dir, f"{label}.prompt.md")
         result = run_provider(
             builder, prompt=text, prompt_file=round_file, mode="implement", dry_run=False,
-            cwd=worktree, label=label, **common,
+            cwd=worktree, label=label, guard="branch", **common,
         )
         results.append(result)
         return result

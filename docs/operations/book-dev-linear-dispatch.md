@@ -30,7 +30,12 @@
 `failed`/`timeout` = ดู log ใน dispatch directory สามกรณีหลังเก็บ worktree ไว้ถ้ามีงานค้าง (`flow.worktree_kept`) ลบเองด้วย `git worktree remove` เมื่อตัดสินแล้ว
 Codex รีวิวด้วย `-c project_doc_max_bytes=0` จึงไม่โหลด `AGENTS.md`/`AGENTS.override.md` จาก commit ของ builder เป็นคำสั่งตัวเอง (ทดสอบจริงแล้ว 2026-11-01)
 checkout ที่ใช้รีวิวและไฟล์ผลรีวิวอยู่ใน temp dir ใหม่ (สิทธิ์ 0700) แล้วคัดลอกกลับมาเก็บ
-ข้อจำกัดที่เหลือ: Bash ของ builder ไม่ได้อยู่ใน sandbox ระดับ OS ถ้า builder ทิ้ง process ค้างไว้ก็ยังเข้าถึงไฟล์ของ user ได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
+Repo ปลายทางไม่มี `.claude/settings.json` และ hook ของ hub ไม่โหลดใน worktree dispatcher จึงส่ง `infra/scripts/workflows/book_dev_dispatch_guard.py` เป็น PreToolUse hook ผ่าน `--settings` ทุกครั้งที่เรียก Claude
+- ทุก flow: ห้ามแตะ path ของ secret (`.env`, key, `~/.ssh`, `~/.config` …) และตัวแปร env ที่ชื่อเป็น credential (`$..._TOKEN`, `printenv`), ห้ามเขียนไฟล์นอก working directory ทั้งผ่าน Edit/Write และผ่าน shell (`>`, `tee`, `cp`, `mv`, `dd`; ยกเว้น `/dev/*`), ห้าม `sudo`, `git reset --hard`, `git clean`, force push, `rm -r` นอก working directory และการ dump env
+- คำสั่ง shell ถูกแยก token ตาม quote แล้วตัดตาม `;`/`&&`/`|` และตรวจข้อความใน `bash -c`, `eval`, `$(...)` ด้วย
+- Flow สร้าง–รีวิว (policy `branch`) ห้ามเพิ่ม: `git push`/`switch`/`checkout <branch>`/`merge`/`tag`/`worktree`, CLI `gh` ทุกคำสั่ง (รวมแบบอ่าน), CLI deploy/cloud/secret (`vercel`, `railway`, `wrangler`, `infisical` …), `npm publish`/`docker push`, curl/wget ที่ส่งข้อมูลออก และการเขียนไฟล์คำสั่ง agent
+- ทดสอบสดแล้ว 2026-11-02: push, `gh` และการเขียน `AGENTS.md` ถูกบล็อก ส่วน `git status` และการเขียนไฟล์ปกติผ่าน
+ข้อจำกัดที่เหลือ: guard ตรวจจากข้อความคำสั่ง ไม่ใช่ sandbox ระดับ OS โปรแกรมที่ตั้งใจหลบ (เช่น สคริปต์ที่ builder เขียนเองแล้วสั่งรัน) ยังเลี่ยงได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)
 
 ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ
