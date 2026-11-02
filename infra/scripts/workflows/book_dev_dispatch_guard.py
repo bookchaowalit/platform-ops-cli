@@ -591,6 +591,15 @@ def decide(payload: dict, policy: str) -> str | None:
     if tool in SHELL_TOOLS:
         reason = _command_reason(str(tool_input.get("command") or ""), _Ctx(cwd, policy))
         return _deny(reason) if reason else None
+    # Grep/Glob select files by pattern too: `glob="**/.env"` reads what Read(.env) may not.
+    for key in ("glob", "pattern") if tool in {"Grep", "Glob"} else ():
+        value = tool_input.get(key)
+        if key == "pattern" and tool == "Grep":
+            continue  # Grep's pattern is the regex, not a path
+        if isinstance(value, str) and (SECRET_PATH_RE.search(" " + value + " ") or re.search(
+            r"(^|[/{,*])\.?(env(?!\.(example|sample|template|dist)\b)|ssh|aws|gnupg|netrc)\b|\.(pem|key|p12|pfx)\b|id_(rsa|ed25519)", value, re.IGNORECASE
+        )):
+            return _deny("secret and credential files are off limits, also by glob")
     for key in PATH_KEYS:
         value = tool_input.get(key)
         if not isinstance(value, str) or not value:

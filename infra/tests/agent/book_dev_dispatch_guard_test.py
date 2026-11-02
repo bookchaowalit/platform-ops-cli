@@ -233,6 +233,11 @@ def main() -> int:
         assert tool("Read", cwd, file_path=str(cwd / ".env"))
         assert tool("Read", cwd, file_path="/home/someone/.ssh/id_ed25519")
         assert tool("Grep", cwd, path="/home/someone/.config")
+        assert tool("Grep", cwd, path=str(cwd), glob="**/.env", pattern=".")
+        assert tool("Grep", cwd, path=str(cwd), glob="*.{env,pem}", pattern=".")
+        assert tool("Glob", cwd, pattern="**/id_rsa*")
+        assert tool("Grep", cwd, path=str(cwd), glob="**/*.py", pattern="environ") is None
+        assert tool("Grep", cwd, path=str(cwd), glob="**/.env.example", pattern=".") is None
         assert tool("Read", cwd, file_path=str(cwd / "src" / "app.py")) is None
         assert tool("Read", cwd, file_path="/usr/share/doc/README") is None
         assert tool("Edit", cwd, file_path=str(cwd / "src" / "app.py")) is None
