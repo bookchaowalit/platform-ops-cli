@@ -190,6 +190,9 @@ def main() -> int:
             "git -C../other-repo commit -am x",
             "git -C src -C ../.. commit -am x",
             "git -Csrc -C../../x status",
+            "git --attr-source HEAD -C ../.. status",
+            "git --unknown-flag push",
+            "git --bare status",
             "git symbolic-ref HEAD refs/heads/main",
             "git symbolic-ref -d HEAD",
             "EDITOR='sh -c x' git commit",
@@ -201,7 +204,7 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
-        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git -C src -C .. status", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
+        for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git -C src -C .. status", "git --no-pager log -1", "git -P diff", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
                         "git commit -m 'note $(gh pr create) is the dispatcher step'", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command

@@ -104,7 +104,12 @@ GIT_ENV_RE = re.compile(
     r"|^(EDITOR|VISUAL|PAGER|GIT_PAGER|LESSOPEN|LESSCLOSE)=(?!(cat|true|:|less|more)?$)"
 )
 GIT_BRANCH_DENY = {"push", "switch", "merge", "tag", "worktree", "remote", "filter-branch", "filter-repo", "update-ref"}
-GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--attr-source", "--config-env",
+                  "--super-prefix"}
+# Global flags the builder may pass before the subcommand; any other global option is denied.
+GIT_GLOBAL_FLAGS = {"-p", "--paginate", "-P", "--no-pager", "--no-replace-objects", "--literal-pathspecs",
+                    "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks",
+                    "--no-advice", "--version", "--help", "-C"}
 CURL_VALUE_SHORT = set("oHuAewmxbcKErYyzCPQUDJ")
 CONTROL_OPS = {";", "&&", "||", "|", "&", "(", ")", "|&", ";;", "\n"}
 BACKTICK_RE = re.compile(r"`([^`]*)`")
@@ -257,8 +262,12 @@ def _git_reason(args: list[str], policy: str) -> str | None:
     while i < len(args) and args[i].startswith("-"):
         if policy == "branch" and (args[i] == "-c" or args[i].startswith(("-c", "--config-env"))):
             return "git -c overrides (hooks, aliases, remotes, credentials) are not allowed"
-        if policy == "branch" and args[i].split("=", 1)[0] in {"--git-dir", "--work-tree", "--exec-path", "--namespace"}:
+        name = args[i].split("=", 1)[0]
+        if policy == "branch" and name in {"--git-dir", "--work-tree", "--exec-path", "--namespace", "--attr-source",
+                                           "--super-prefix"}:
             return "git must run on this worktree's own repository"
+        if policy == "branch" and name not in GIT_GLOBAL_FLAGS and not args[i].startswith("-C"):
+            return f"git global option {name} is not on the builder's list"
         i += 2 if args[i] in GIT_VALUE_OPTS else 1
     if i >= len(args):
         return None
