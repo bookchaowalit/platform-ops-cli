@@ -250,6 +250,10 @@ def main() -> int:
         (cwd / "docs").mkdir()
         assert bash("ln -s ../README.md docs", cwd) is None
         assert bash("ln -sT ../README.md docs", cwd)  # -T: docs itself is the link
+        assert bash("ln -sn ../README.md docs", cwd) is None  # -n: docs is a real directory
+        (cwd / "docs-link").symlink_to("docs")
+        assert bash("ln -sn ../README.md docs-link", cwd)  # -n: the symlink itself is replaced
+        assert bash("ln -s ../README.md docs-link", cwd) is None
         # Symlinks keep their target text when copied or moved.
         (cwd / "nest" / "deep").mkdir(parents=True)
         (cwd / "nest" / "up").symlink_to("../docs")
@@ -258,6 +262,11 @@ def main() -> int:
         for command in ("mv nest/up up", "cp -P nest/up up", "cp -a nest flat", "cp -r nest copy", "cp --archive nest x",
                         "mv nest/deep d", "cp -s ../other-repo/a b"):
             assert bash(command, cwd), command
+        (cwd / "docs" / "existing-link").symlink_to("../README.md")
+        for command in ("mv notes.txt docs", "mv -t docs notes.txt", "mv --target-directory=docs a b"):
+            assert bash(command, cwd) is None, (command, bash(command, cwd))  # the destination's links stay put
+        assert bash("mv -t docs nest/up", cwd)
+        assert bash("mv docs ../elsewhere", cwd)
         for command in ("cp -rL nest copy", "cp nest/up up", "mv nest/ok ok2", "cp -P nest/ok ok3"):
             assert bash(command, cwd) is None, (command, bash(command, cwd))
         for command in ("ln -s ../lib/util.py src/util.py", "ln -s src/app.py app.py", "ln -sf src current",

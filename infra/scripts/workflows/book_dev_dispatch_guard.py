@@ -403,14 +403,14 @@ def _http_write(program: str, args: list[str]) -> bool:
 
 
 def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, from_link_dir: bool,
-                 dest_is_file: bool = False) -> str | None:
+                 no_target: bool = False, no_dereference: bool = False) -> str | None:
     """Where a new link points must pass the same write check as the link itself.
 
     Writes later in the command go through the link (`ln -s ../other out && printf x >
     out/f`) but are checked before it exists, so a link may only point inside the
     working directory. A plain symbolic referent is relative to the link's directory:
-    the destination when it is an existing directory (and ``dest_is_file`` is not set
-    by -T/-n), else its parent. A destination made later in the same command is
+    the destination when it is an existing directory, else its parent. -T always
+    makes the destination the link; -n only does when it is a symlink to a directory. A destination made later in the same command is
     checked from its parent, which is never laxer. Hard links, `ln -r` and `cp -s/-l`
     sources are relative to the current directory."""
     if target_dirs:
@@ -420,7 +420,8 @@ def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, from_link_
         resolved = _resolve(dest, ctx.here)
         if resolved is None:
             return "link location could not be resolved"
-        into_dir = resolved.is_dir() and not (dest_is_file and (Path(ctx.here, dest).is_symlink() or not dest.endswith("/")))
+        into_dir = resolved.is_dir() and not no_target and not (
+            no_dereference and Path(ctx.here, os.path.expanduser(dest)).is_symlink())
         link_dirs = [dest if into_dir else str(Path(dest).parent)]
     else:
         sources, link_dirs = paths, []
@@ -580,9 +581,9 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         if program == "ln":
             symbolic = "s" in shorts or _long_opt(args, "--symbolic", 4)
             relative = "r" in shorts or _long_opt(args, "--relative", 3)
-            dest_is_file = bool({"T", "n"} & shorts) or _long_opt(args, "--no-target-directory", 6) or _long_opt(
-                args, "--no-dereference", 6)
-            reason = _link_reason(paths, target_dirs, ctx, symbolic and not relative, dest_is_file)
+            no_target = "T" in shorts or _long_opt(args, "--no-target-directory", 6)
+            no_dereference = "n" in shorts or _long_opt(args, "--no-dereference", 6)
+            reason = _link_reason(paths, target_dirs, ctx, symbolic and not relative, no_target, no_dereference)
         elif program == "cp":
             if {"s", "l"} & shorts or _long_opt(args, "--symbolic-link", 4) or _long_opt(args, "--link", 3):
                 reason = _link_reason(paths, target_dirs, ctx, False)
@@ -597,8 +598,11 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         if reason:
             return reason
     elif program == "mv":
-        targets = positional  # the source disappears too
-        if any(_carries_escaping_link(item, ctx) for item in positional):
+        paths, opts = _parse(args, {"-t", "--target-directory", "-S", "--suffix"})
+        targets = paths + opts.get("-t", []) + opts.get("--target-directory", [])  # the source disappears too
+        # Only what is moved carries its links; the destination keeps its own.
+        sources = paths if "-t" in opts or "--target-directory" in opts else paths[:-1]
+        if any(_carries_escaping_link(item, ctx) for item in sources):
             return "moved symlinks would point outside the working directory"
     elif program == "dd":
         targets = [item[3:] for item in args if item.startswith("of=")]
