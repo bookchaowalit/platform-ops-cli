@@ -276,6 +276,16 @@ def main() -> int:
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
                         "git commit -m 'note $(gh pr create) is the dispatcher step'", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):
             assert bash(command, cwd, "branch") is None, command
+        # Codex review 2026-11-03: worktrees share branch refs; fetch only writes refs/remotes/.
+        for command in ("git fetch --update-head-ok origin +HEAD:refs/heads/main", "git fetch origin main:main",
+                        "git fetch . HEAD:refs/heads/main", "git fetch origin +main:refs/heads/main",
+                        "git fetch --depth 1 origin main:refs/tags/x", "git fetch --refmap=+refs/heads/*:refs/heads/* origin",
+                        "git fetch --update-he origin main"):
+            assert bash(command, cwd, "branch"), command
+        for command in ("git fetch origin", "git fetch origin main", "git fetch --depth 1 origin main",
+                        "git fetch origin +main:refs/remotes/origin/main", "git fetch --multiple origin upstream",
+                        "git fetch --prune origin"):
+            assert bash(command, cwd, "branch") is None, (command, bash(command, cwd, "branch"))
         assert bash("git push --force-with-lease=refs/heads/main:abc origin main", cwd, "release")
         assert bash("git push -uf origin main", cwd, "release")
         quiet = [
@@ -339,6 +349,12 @@ def main() -> int:
         (cwd / "keys").mkdir()
         (cwd / "keys" / "id_rsa").write_text("k")
         assert tool("Glob", cwd, pattern="**/id_[r]sa")
+        # Codex review 2026-11-03: an unfiltered Grep reads everything below its root.
+        assert tool("Grep", cwd, path=str(cwd), pattern=".", output_mode="content")
+        assert tool("Grep", cwd, pattern="BEGIN")
+        assert tool("Grep", cwd, path=str(cwd / "keys"), pattern=".")
+        assert tool("Grep", cwd, path=str(cwd / "infra"), glob="*.py", pattern=".") is None
+        assert tool("Grep", cwd, path=str(cwd / "infra" / "app.py"), pattern=".") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/*.py", pattern="environ") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/.env.example", pattern=".") is None
         assert tool("Read", cwd, file_path=str(cwd / "src" / "app.py")) is None

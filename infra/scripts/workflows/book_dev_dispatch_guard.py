@@ -327,6 +327,30 @@ def _git_reason(args: list[str], policy: str) -> str | None:
             return f"git {sub} is the dispatcher's or owner's step; commit on this branch only"
         if sub == "checkout" and "--" not in rest:
             return "do not switch branches; use `git checkout -- <path>` or `git restore` for files"
+        if sub == "fetch":
+            return _fetch_reason(rest)
+    return None
+
+
+# git fetch options that take a separate value, so it is not read as the remote or a refspec.
+FETCH_VALUE_OPTS = {"--depth", "--deepen", "--shallow-since", "--shallow-exclude", "--negotiation-tip", "-o",
+                    "--server-option", "-j", "--jobs", "--filter", "--upload-pack", "--refmap"}
+
+
+def _fetch_reason(rest: list[str]) -> str | None:
+    """Worktrees share branch refs, so a fetch may only write remote-tracking refs.
+
+    `git fetch origin +HEAD:refs/heads/main` would move the owner's checked-out
+    branch from the builder's worktree; refspec destinations must sit under
+    refs/remotes/, and --update-head-ok and --refmap are denied."""
+    if _long_opt(rest, "--update-head-ok", 4) or _long_opt(rest, "--refmap", 5):
+        return "git fetch --update-head-ok/--refmap can rewrite shared branches"
+    positional, _ = _parse(rest, FETCH_VALUE_OPTS)
+    multiple = _long_opt(rest, "--multiple", 4) or _long_opt(rest, "--all", 4)
+    for refspec in [] if multiple else positional[1:]:
+        source, colon, dest = refspec.lstrip("+").partition(":")
+        if colon and dest and not dest.startswith("refs/remotes/"):
+            return "git fetch may only update refs/remotes/; local branches are shared with the owner's checkout"
     return None
 
 
@@ -852,6 +876,11 @@ def decide(payload: dict, policy: str) -> str | None:
             return _deny("secret and credential files are off limits, also by glob")
         if _contains_secret(str(root), cwd):
             return _deny("searching a directory that holds secret or credential files is off limits")
+        # Without a glob, Grep reads every file below the root, so that whole tree is checked.
+        if tool == "Grep" and not (isinstance(selector, str) and selector) and root.is_dir() and _glob_selects_secret(
+            "**", root, cwd
+        ):
+            return _deny("the search would read secret or credential files; narrow it with path or glob")
     for key in PATH_KEYS:
         value = tool_input.get(key)
         if not isinstance(value, str) or not value:
