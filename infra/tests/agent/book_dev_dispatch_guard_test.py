@@ -281,6 +281,10 @@ def main() -> int:
             assert bash(command, cwd) is None, (command, bash(command, cwd))  # the destination's links stay put
         assert bash("mv -t docs nest/up", cwd)
         assert bash("mv docs ../elsewhere", cwd)
+        (cwd / "docs" / "current").symlink_to("../README.md")
+        for command in ("cp --preserve=all docs/current README.copy", "cp --preserve=links docs/current r2"):
+            assert bash(command, cwd) is None, (command, bash(command, cwd))  # copies the referent's contents
+        assert bash("cp -P --preserve=all docs/current README.copy", cwd)
         for command in ("cp -rL nest copy", "cp nest/up up", "mv nest/ok ok2", "cp -P nest/ok ok3"):
             assert bash(command, cwd) is None, (command, bash(command, cwd))
         for command in ("ln -s ../lib/util.py src/util.py", "ln -s src/app.py app.py", "ln -sf src current",

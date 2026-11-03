@@ -613,10 +613,10 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         elif program == "cp":
             if {"s", "l"} & shorts or _long_opt(args, "--symbolic-link", 4) or _long_opt(args, "--link", 3):
                 reason = _link_reason(paths, target_dirs, ctx, False)
-            # -a/-d/-P/-r and friends copy symlinks as symlinks unless -L dereferences them.
+            # -a/-d/-P/-r and friends copy symlinks as symlinks unless -L dereferences them;
+            # --preserve=links/all only keeps attributes and hard-link relationships.
             keeps_links = bool(set("adPRr") & shorts) or any(_long_opt(args, name, 4) for name in (
-                "--archive", "--recursive", "--no-dereference")) or any(
-                re.fullmatch(r"--pr\w*=.*(links|all).*", item) for item in args)
+                "--archive", "--recursive", "--no-dereference"))
             if keeps_links and "L" not in shorts and not _long_opt(args, "--dereference", 4) and any(
                 _carries_escaping_link(item, ctx) for item in (paths if target_dirs else paths[:-1])
             ):
