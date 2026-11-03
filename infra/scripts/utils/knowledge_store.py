@@ -48,6 +48,9 @@ def _client_file(environ: Any) -> dict[str, str]:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
+    except (OSError, UnicodeDecodeError):
+        # Configured but unreadable: a failed sync, never a crash before the local copy is written.
+        raise StoreUnavailable("client.env is not readable") from None
     values: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()

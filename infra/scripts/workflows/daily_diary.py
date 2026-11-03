@@ -97,8 +97,11 @@ def open_diary_store():
 
 def merge_summaries(base: list[dict[str, Any]], other: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """``base`` plus the rows only ``other`` has, each placed after its nearest preceding row
-    from ``other`` that is already present, so overlapping bounded copies keep their order
-    and trimming drops the oldest rows, not the newest."""
+    from ``other`` that is already present (before the first shared row when none precedes),
+    so overlapping bounded copies keep their order and trimming drops the oldest rows. When the
+    copies share no row at all, ``other``'s rows (recorded offline) go last, as the newest."""
+    if not {row["id"] for row in other} & {row["id"] for row in base}:
+        return list(base) + [row for row in other]
     merged = list(base)
     position = {row["id"]: i for i, row in enumerate(merged)}
     anchor = -1
@@ -110,6 +113,15 @@ def merge_summaries(base: list[dict[str, Any]], other: list[dict[str, Any]]) -> 
         merged.insert(anchor, row)
         position = {r["id"]: i for i, r in enumerate(merged)}
     return merged
+
+
+def bounded(rows: list[dict[str, Any]], keep_id: str | None = None) -> list[dict[str, Any]]:
+    """The newest MAX_CONVERSATION_SUMMARIES rows, always including ``keep_id``'s row."""
+    rows = list(rows)
+    while len(rows) > MAX_CONVERSATION_SUMMARIES:
+        drop = next(i for i, row in enumerate(rows) if row["id"] != keep_id)
+        del rows[drop]
+    return rows
 
 
 def _store_path(day: str, filename: str) -> str:
@@ -203,13 +215,14 @@ def record_conversation_summary(
     def apply(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
         rows = list(rows)
         match = next((row for row in rows if row["id"] == item_id), None)
+        # The row being recorded is never the one trimmed away.
         if match is not None and not (function_ids and match.get("functions") != function_ids):
-            return rows[-MAX_CONVERSATION_SUMMARIES:], False
+            return bounded(rows, item_id), False
         if match is not None:
             rows[rows.index(match)] = item
         else:
             rows.append(item)
-        return rows[-MAX_CONVERSATION_SUMMARIES:], True
+        return bounded(rows, item_id), True
 
     def write_local(rows: list[dict[str, Any]]) -> None:
         path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -507,7 +520,7 @@ def merged_summaries(entries_root: str | Path, day: str) -> tuple[list[dict[str,
         return local, f"failed: {exc}"
     if remote is None:
         return local, "synced"
-    return merge_summaries(_parse_summaries(remote[0]), local)[-MAX_CONVERSATION_SUMMARIES:], "synced"
+    return bounded(merge_summaries(_parse_summaries(remote[0]), local)), "synced"
 
 
 def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
@@ -619,7 +632,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # A note built without the store's summaries is kept local, never uploaded over the stored one.
     def rebuild() -> dict[str, Any]:
-        rows, _ = merged_summaries(args.entries_root, args.date)
+        rows, status = merged_summaries(args.entries_root, args.date)
+        if status not in {"synced", "off"}:
+            # Never upload a note built from the local copy alone over the stored one.
+            raise StoreUnavailable(status.removeprefix("failed: "))
         return build_daily_diary(as_of=args.date, repo_root=args.repo_root, entries_root=args.entries_root,
                                  summaries=rows)
 

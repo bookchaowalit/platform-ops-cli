@@ -183,6 +183,41 @@ class DiaryStoreTest(unittest.TestCase):
         mixed = daily_diary.merge_summaries([row(1), row(3)], [row(1), row(2)])
         self.assertEqual([r["id"] for r in mixed], ["r1", "r2", "r3"])
 
+    def test_an_offline_summary_survives_a_full_remote_list(self) -> None:
+        row = lambda i: {"id": f"r{i}", "topic": "t", "question_summary": "q", "outcome_summary": "o", "next_step": ""}
+        store = FakeStore()
+        store.docs[SUMMARIES] = (json.dumps([row(i) for i in range(100)]).encode(), 1)
+        with tempfile.TemporaryDirectory() as root:
+            with patch.object(daily_diary, "open_diary_store", return_value=None):
+                offline = record(root, conversation_id="offline-1")
+            with patch.object(daily_diary, "open_diary_store", return_value=store):
+                again = record(root, conversation_id="offline-1")
+            self.assertEqual(again["store"], "synced")
+            ids = [r["id"] for r in json.loads(store.docs[SUMMARIES][0])]
+            self.assertEqual(len(ids), daily_diary.MAX_CONVERSATION_SUMMARIES)
+            self.assertEqual(ids[-1], offline["id"])
+            self.assertNotIn("r0", ids)
+
+    def test_a_failed_rebuild_cancels_the_note_upload(self) -> None:
+        store = FakeStore()
+        store.docs["diary/entries/2026/11/03/auto-daily.md"] = (b"newer note", 4)
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            payload = build_daily_diary(as_of=DAY, repo_root=tempfile.gettempdir(), entries_root=root)
+
+            def broken() -> dict:
+                raise knowledge_store.StoreUnavailable("503")
+
+            write_daily_diary(payload, root, rebuild=broken)
+            self.assertEqual(store.docs["diary/entries/2026/11/03/auto-daily.md"], (b"newer note", 4))
+
+    def test_an_unreadable_client_env_is_a_store_error(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            folder = Path(home, "client.env")
+            folder.mkdir(mode=0o700)  # reading a directory raises IsADirectoryError
+            folder.chmod(0o700)
+            with self.assertRaises(knowledge_store.StoreUnavailable):
+                knowledge_store.settings({"EMPIRE_CLIENT_CONFIG": str(folder)})
+
     def test_a_misconfigured_store_is_a_failed_sync_not_local_only(self) -> None:
         with patch.object(daily_diary, "open_store", side_effect=knowledge_store.StoreUnavailable("client.env must be chmod 600")):
             store = daily_diary.open_diary_store()
