@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -142,9 +144,13 @@ class DiaryStoreTest(unittest.TestCase):
         other = [{"id": "elsewhere", "topic": "x", "question_summary": "q", "outcome_summary": "o", "next_step": ""}]
         store.docs[SUMMARIES] = (json.dumps(other).encode(), 1)
         with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
-            self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--json"]), 0)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--json"]), 0)
             self.assertFalse(Path(root, "2026").exists())
             self.assertEqual(store.puts, [])
+            # The preview still counts the summary recorded on another machine.
+            self.assertEqual(json.loads(out.getvalue())["overview"]["conversation_summaries"], 1)
 
         class Down(FakeStore):
             def get(self, path: str):

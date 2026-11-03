@@ -318,8 +318,10 @@ def build_daily_diary(
     as_of: str | date | None = None,
     repo_root: str | Path = PROJECT_ROOT,
     entries_root: str | Path = DEFAULT_ENTRIES_ROOT,
+    summaries: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """Build the bounded daily payload without writing or mutating state."""
+    """Build the bounded daily payload without writing or mutating state. ``summaries``
+    replaces the local file's conversation summaries (a preview merges the store's in memory)."""
     day = as_of.isoformat() if isinstance(as_of, date) else (as_of or date.today().isoformat())
     day = _date_arg(day)
 
@@ -332,7 +334,7 @@ def build_daily_diary(
         current_state = {"blocked_tasks": 0, "overdue_tasks": 0}
         tasks_available = False
     git_commits = _git_commits(Path(repo_root), day)
-    conversation_summaries = load_conversation_summaries(entries_root, day)
+    conversation_summaries = summaries if summaries is not None else load_conversation_summaries(entries_root, day)
 
     overview = _overview(
         completed_tasks,
@@ -462,30 +464,35 @@ def render_daily_diary(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
-    """Merge the store's summaries for ``day`` into the local copy before a daily note is built,
-    so a note uploaded from this machine never drops summaries recorded elsewhere."""
+def merged_summaries(entries_root: str | Path, day: str) -> tuple[list[dict[str, str]], str]:
+    """The store's summaries for ``day`` merged with the local copy, in memory, and the store status."""
+    local = load_conversation_summaries(entries_root, day)
     store = open_diary_store()
     if store is None:
-        return "off"
+        return local, "off"
     try:
         remote = store.get(_store_path(day, CONVERSATION_FILENAME))
     except StoreUnavailable as exc:
-        return f"failed: {exc}"
+        return local, f"failed: {exc}"
     if remote is None:
-        return "synced"
-    local = load_conversation_summaries(entries_root, day)
+        return local, "synced"
     rows = _parse_summaries(remote[0])
     known = {row["id"] for row in rows}
-    rows = (rows + [row for row in local if row["id"] not in known])[-MAX_CONVERSATION_SUMMARIES:]
-    if rows != local:
+    return (rows + [row for row in local if row["id"] not in known])[-MAX_CONVERSATION_SUMMARIES:], "synced"
+
+
+def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
+    """Merge the store's summaries for ``day`` into the local copy before a daily note is built,
+    so a note uploaded from this machine never drops summaries recorded elsewhere."""
+    rows, status = merged_summaries(entries_root, day)
+    if status == "synced" and rows != load_conversation_summaries(entries_root, day):
         target_dir = _date_dir(entries_root, day)
         target_dir.mkdir(parents=True, exist_ok=True)
         target_dir.chmod(0o700)
         path = target_dir / CONVERSATION_FILENAME
         path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         path.chmod(0o600)
-    return "synced"
+    return status
 
 
 def write_daily_diary(
@@ -563,10 +570,15 @@ def main(argv: list[str] | None = None) -> int:
     elif args.write:
         # Only a real write refreshes the local copy; a preview changes nothing on disk.
         upload = refresh_local_summaries(args.entries_root, args.date) in {"synced", "off"}
+    preview_summaries = None
+    if not writing:
+        # A preview still shows summaries recorded on other machines, merged in memory only.
+        preview_summaries, _ = merged_summaries(args.entries_root, args.date or date.today().isoformat())
     payload = build_daily_diary(
         as_of=args.date,
         repo_root=args.repo_root,
         entries_root=args.entries_root,
+        summaries=preview_summaries,
     )
 
     # A note built without the store's summaries is kept local, never uploaded over the stored one.
