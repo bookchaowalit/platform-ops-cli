@@ -204,6 +204,47 @@ def main() -> int:
         for command in security:
             assert bash(command, cwd, "branch"), command
         assert tool("Read", cwd, file_path=str(Path.home() / ".config" / "gh" / "hosts.yml"))
+        # Codex review 2026-11-03: CLI login caches, through every read path.
+        home = Path.home()
+        caches = [home / ".codex" / "auth.json", home / ".claude" / ".credentials.json",
+                  home / ".config" / "gh" / "hosts.yml", home / ".railway" / "config.json", home / ".claude.json"]
+        for cache in caches:
+            short = "~/" + cache.relative_to(home).as_posix()
+            for path in (str(cache), short):
+                assert tool("Read", cwd, file_path=path), path
+                assert tool("Grep", cwd, path=path, pattern="token"), path
+                for command in (f"cat {path}", f"head -c 100 {path}", f"grep -i token {path}", f"cp {path} notes.txt"):
+                    assert bash(command, cwd, "branch") and bash(command, cwd, "release"), command
+            assert bash("cat $HOME/" + cache.relative_to(home).as_posix(), cwd), cache
+            assert bash("cat " + "../" * 30 + cache.relative_to(Path("/")).as_posix(), cwd), cache
+        assert tool("Grep", cwd, path="~", pattern="access_token")
+        assert tool("Grep", cwd, path=str(home / ".claude"), pattern="access_token")
+        assert tool("Glob", cwd, pattern="~/.claude/.cred*")
+        assert tool("Glob", cwd, pattern=str(home) + "/.c*/auth.json")
+        assert tool("Glob", cwd, path=str(home), pattern="**/*.json")
+        assert tool("Read", cwd, file_path=str(home / ".claude" / "settings.json")) is None
+        # Codex review 2026-11-03: a new link is checked where it points, not only where it is made.
+        links = [
+            "ln -s ../other-repo out && printf x > out/file",
+            "ln -s ../other-repo out; printf x > out/file",
+            "ln -sf /etc out",
+            "ln --symbolic .. up && printf x > up/other-repo/file",
+            "ln -s ../../x src/link",
+            "ln -s -t src ../../other-repo",
+            "ln -s ../other-repo",
+            "ln -s .git g && printf x > g/config",
+            "ln -s $HOME/.ssh k",
+            "ln ../other-repo/package.json p && printf x > p",
+            "cp -s /etc/hosts h",
+            "cp --link ../other-repo/a b",
+        ]
+        for command in links:
+            for policy in ("release", "branch"):
+                assert bash(command, cwd, policy), (policy, command)
+        (cwd / "src").mkdir(exist_ok=True)
+        for command in ("ln -s ../lib/util.py src/util.py", "ln -s src/app.py app.py", "ln -sf src current",
+                        "ln -s -t src ../README.md", "cp -r src build"):
+            assert bash(command, cwd, "branch") is None, (command, bash(command, cwd, "branch"))
         for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git -C src -C .. status", "git --no-pager log -1", "git -P diff", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
                         "git commit -m 'note $(gh pr create) is the dispatcher step'", "git stash", "git log -1 --stat", "git rebase origin/main", "git fetch origin main"):

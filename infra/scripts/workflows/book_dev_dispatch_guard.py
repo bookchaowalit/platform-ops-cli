@@ -5,10 +5,12 @@ Target repositories carry no Claude Code settings, so the dispatcher passes this
 hook with ``--settings``. It reads the hook payload on stdin and denies:
 
   all policies
-    - secret paths (``.env``, keys, ``~/.ssh``, ``~/.config``, ...) and
-      credential-named environment variables, in any tool
+    - secret paths (``.env``, keys, ``~/.ssh``, ``~/.config``, CLI login caches
+      such as ``~/.codex/auth.json`` and ``~/.claude/.credentials.json``, ...)
+      and credential-named environment variables, in any tool
     - writes outside the run's working directory (edit tools, shell
-      redirections, ``tee``/``cp``/``mv``/``dd``); /dev is fine
+      redirections, ``tee``/``cp``/``mv``/``dd``), and links that point
+      outside it; /dev is fine
     - sudo, ``git reset --hard``, ``git clean``, force pushes, recursive ``rm``
       outside the working directory, environment dumps
   ``branch`` (build-review worktree)
@@ -45,9 +47,12 @@ SECRET_PATH_RE = re.compile(
     r"|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
     r"|id_(rsa|dsa|ecdsa|ed25519)[\w.-]*"
     r"|/proc/[^/\s]+/(environ|cmdline|mem)"
-    r"|\.netrc|\.git-credentials|\.npmrc|\.pypirc|credentials\.json|book-dev-dispatch\.env"
+    r"|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.?credentials\.json|book-dev-dispatch\.env"
     r")" + _TAIL
-    + r"|" + _LEAD + r"(~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)/\.(ssh|config|aws|gnupg|docker|kube|infisical)(/|$|[\s'\"<>])",
+    + r"|" + _LEAD + r"(~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)/("
+    r"\.(ssh|config|aws|gnupg|docker|kube|infisical|codex|railway|fly|wrangler|vercel|gemini|azure|terraform\.d)(/|$|[\s'\"<>])"
+    # CLI login caches outside the directories above (Claude Code, Vercel).
+    r"|(\.claude/\.credentials\.json|\.claude\.json|\.local/share/com\.vercel\.cli)" + _TAIL + r")",
     re.IGNORECASE,
 )
 SECRET_ENV_RE = re.compile(
@@ -147,7 +152,11 @@ def _within(resolved: Path | None, root: Path) -> bool:
     return resolved is not None and (resolved == root or root in resolved.parents)
 
 
-HOME_SECRET_DIRS = tuple(Path.home() / name for name in (".ssh", ".config", ".aws", ".gnupg", ".docker", ".kube", ".infisical"))
+# Secret directories and CLI login caches (gh lives under ~/.config) in the home directory.
+HOME_SECRET_DIRS = tuple(Path.home() / name for name in (
+    ".ssh", ".config", ".aws", ".gnupg", ".docker", ".kube", ".infisical", ".codex", ".railway", ".fly",
+    ".wrangler", ".vercel", ".gemini", ".azure", ".terraform.d", ".local/share/com.vercel.cli"))
+HOME_SECRET_FILES = tuple(Path.home() / name for name in (".claude/.credentials.json", ".claude.json"))
 
 
 def _secret_resolved(path: str, base: Path) -> bool:
@@ -155,8 +164,15 @@ def _secret_resolved(path: str, base: Path) -> bool:
     resolved = _resolve(path, base)
     return resolved is not None and (
         any(resolved == secret or secret in resolved.parents for secret in HOME_SECRET_DIRS)
+        or resolved in HOME_SECRET_FILES
         or bool(SECRET_PATH_RE.search(" " + resolved.as_posix() + " "))
     )
+
+
+def _contains_secret(path: str, base: Path) -> bool:
+    """Whether a search root such as ~ or ~/.claude would walk into a secret location."""
+    resolved = _resolve(path, base)
+    return resolved is None or any(resolved in secret.parents for secret in HOME_SECRET_DIRS + HOME_SECRET_FILES)
 
 
 def _write_reason(path: str, ctx: _Ctx) -> str | None:
@@ -386,6 +402,33 @@ def _http_write(program: str, args: list[str]) -> bool:
     return any(method.upper() not in {"GET", "HEAD", "OPTIONS"} for method in methods)
 
 
+def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, symbolic: bool) -> str | None:
+    """Where a new link points must pass the same write check as the link itself.
+
+    Writes later in the command go through the link (`ln -s ../other out && printf x >
+    out/f`) but are checked before it exists, so a link may only point inside the
+    working directory. A symbolic referent is relative to the link's directory, which
+    is either the destination or its parent, so both are checked; hard links and
+    `cp -s` sources are relative to the current directory."""
+    if target_dirs:
+        sources, link_dirs = paths, list(target_dirs)
+    elif len(paths) > 1:
+        sources, link_dirs = paths[:-1], [paths[-1], str(Path(paths[-1]).parent)]
+    else:
+        sources, link_dirs = paths, []
+    for link_dir in (link_dirs or ["."]) if symbolic else ["."]:
+        base = _resolve(link_dir, ctx.here)
+        if base is None:
+            return "link location could not be resolved"
+        scoped = _Ctx(ctx.root, ctx.policy)
+        scoped.here = base
+        for source in sources:
+            reason = _write_reason(source, scoped)
+            if reason:
+                return f"links may only point inside the working directory ({reason})"
+    return None
+
+
 def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
     # Redirections: `> f`, `>> f`, `&> f` are writes; `>&2`, `< f` and here-doc words are not.
     words: list[str] = []
@@ -486,6 +529,12 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         paths, opts = _parse(args, {"-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"})
         target_dirs = opts.get("-t", []) + opts.get("--target-directory", [])
         targets = target_dirs or (paths[-1:] if len(paths) > 1 else [])
+        link_flag = r"-[A-Za-z]*s[A-Za-z]*|--sym.*" if program == "ln" else r"-[A-Za-z]*[sl][A-Za-z]*|--sym.*|--link"
+        if program == "ln" or (program == "cp" and any(re.fullmatch(link_flag, item) for item in args)):
+            symbolic = program == "ln" and any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*|--sym.*", item) for item in args)
+            reason = _link_reason(paths, target_dirs, ctx, symbolic)
+            if reason:
+                return reason
     elif program == "mv":
         targets = positional  # the source disappears too
     elif program == "dd":
@@ -671,6 +720,12 @@ def _glob_selects_secret(selector: str, root: Path, cwd: Path | None = None) -> 
     or GLOB_WALK_SECONDS all deny."""
     if SECRET_PATH_RE.search(" " + selector + " ") or _secret_resolved(selector, root):
         return True
+    # An absolute glob (`~/.claude/.cred*`) is walked from its literal prefix, not the root.
+    if selector.startswith(("/", "~")) and not any(selector.startswith(str(base) + "/") for base in (root, cwd) if base):
+        literal = re.split(r"[*?\[{]", selector, maxsplit=1)[0]
+        prefix = (literal if literal == selector else literal.rpartition("/")[0]) or "/"
+        if _contains_secret(prefix, root) or _secret_resolved(prefix, root):
+            return True
     if GLOB_UNMODELLED_RE.search(selector) or ("," in selector and "{" not in selector):
         return True
     # A glob may be anchored at the search root or at the session cwd, depending on the
@@ -728,6 +783,8 @@ def decide(payload: dict, policy: str) -> str | None:
         root = _resolve(str(tool_input.get("path") or "."), cwd) or cwd
         if isinstance(selector, str) and selector and _glob_selects_secret(selector, root, cwd):
             return _deny("secret and credential files are off limits, also by glob")
+        if _contains_secret(str(root), cwd):
+            return _deny("searching a directory that holds secret or credential files is off limits")
     for key in PATH_KEYS:
         value = tool_input.get(key)
         if not isinstance(value, str) or not value:
