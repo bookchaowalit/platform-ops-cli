@@ -7,8 +7,7 @@
 name: Org hub sync
 
 on:
-  schedule:
-    - cron: "0 2 * * *" # 09:00 Asia/Bangkok
+  # Scheduled by the jobs queue (platform-jobs-worker job `org-hub-sync`, cron "0 2 * * *" UTC (09:00 Asia/Bangkok)), ADR-0008.
   workflow_dispatch:
 
 permissions:
