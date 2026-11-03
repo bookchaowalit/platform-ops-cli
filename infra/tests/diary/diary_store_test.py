@@ -128,6 +128,26 @@ class DiaryStoreTest(unittest.TestCase):
             self.assertIn(DAY, content.decode("utf-8"))
 
 
+    def test_the_daily_note_uses_summaries_recorded_elsewhere(self) -> None:
+        store = FakeStore()
+        other = [{"id": "elsewhere", "topic": "x", "question_summary": "from the laptop", "outcome_summary": "o", "next_step": ""}]
+        store.docs[SUMMARIES] = (json.dumps(other).encode(), 1)
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--write", "--json"]), 0)
+            note = store.docs["diary/entries/2026/11/03/auto-daily.md"][0].decode("utf-8")
+            self.assertIn("from the laptop", note)
+
+    def test_merged_summaries_stay_bounded_on_the_duplicate_path(self) -> None:
+        store = FakeStore()
+        many = [{"id": f"r{i}", "topic": "t", "question_summary": "q", "outcome_summary": "o", "next_step": ""}
+                for i in range(daily_diary.MAX_CONVERSATION_SUMMARIES + 20)]
+        store.docs[SUMMARIES] = (json.dumps(many).encode(), 1)
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            record(root, conversation_id="r119")
+            rows = json.loads(store.docs[SUMMARIES][0])
+            self.assertEqual(len(rows), daily_diary.MAX_CONVERSATION_SUMMARIES)
+
+
 class KnowledgeStoreConfigTest(unittest.TestCase):
     def test_configuration_comes_from_env_or_client_env_and_is_https_only(self) -> None:
         with tempfile.TemporaryDirectory() as home:
@@ -138,6 +158,10 @@ class KnowledgeStoreConfigTest(unittest.TestCase):
             self.assertEqual(knowledge_store.settings(env), ("https://k.example", "https://w.example"))
             self.assertIsNone(knowledge_store.settings({"EMPIRE_CLIENT_CONFIG": str(Path(home, "none"))}))
             self.assertIsNone(knowledge_store.settings({**env, "SOLO_DIARY_STORE": "off"}))
+            off = Path(home, "off.env")
+            off.write_text(client.read_text() + "SOLO_DIARY_STORE=off\n")
+            off.chmod(0o600)
+            self.assertIsNone(knowledge_store.settings({"EMPIRE_CLIENT_CONFIG": str(off)}))
             with self.assertRaises(knowledge_store.StoreUnavailable):
                 knowledge_store.settings({**env, "EMPIRE_KNOWLEDGE_API": "http://k.example"})
 

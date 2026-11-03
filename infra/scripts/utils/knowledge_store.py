@@ -74,9 +74,10 @@ def _https_origin(value: str, name: str) -> str:
 def settings(environ: Any = None) -> tuple[str, str] | None:
     """(api_url, issuer) when the store is configured and enabled, else None."""
     environ = os.environ if environ is None else environ
-    if (environ.get("SOLO_DIARY_STORE") or "").strip().lower() in {"off", "0", "false"}:
-        return None
     file_values = _client_file(environ)
+    switch = (environ.get("SOLO_DIARY_STORE") or file_values.get("SOLO_DIARY_STORE") or "").strip().lower()
+    if switch in {"off", "0", "false"}:
+        return None
     api = (environ.get("EMPIRE_KNOWLEDGE_API") or "").strip() or file_values.get("EMPIRE_KNOWLEDGE_API", "")
     issuer = (environ.get("SOLO_WEB_PUBLIC_ORIGIN") or "").strip() or file_values.get("SOLO_WEB_PUBLIC_ORIGIN", "")
     if not api or not issuer:
@@ -91,7 +92,10 @@ def _owner_file(path: Path) -> str:
 
 
 def mint(issuer: str, scope: str, environ: Any = None) -> str:
-    import jwt  # PyJWT + cryptography, as the API verifies
+    try:
+        import jwt  # PyJWT + cryptography (infra/requirements-dev.txt), as the API verifies
+    except ImportError:
+        raise StoreUnavailable("PyJWT[crypto] is not installed") from None
 
     environ = os.environ if environ is None else environ
     try:

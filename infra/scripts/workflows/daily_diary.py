@@ -172,7 +172,7 @@ def record_conversation_summary(
         rows = list(rows)
         match = next((row for row in rows if row["id"] == item_id), None)
         if match is not None and not (function_ids and match.get("functions") != function_ids):
-            return rows, False
+            return rows[-MAX_CONVERSATION_SUMMARIES:], False
         if match is not None:
             rows[rows.index(match)] = item
         else:
@@ -462,6 +462,32 @@ def render_daily_diary(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
+    """Merge the store's summaries for ``day`` into the local copy before a daily note is built,
+    so a note uploaded from this machine never drops summaries recorded elsewhere."""
+    store = open_diary_store()
+    if store is None:
+        return "off"
+    try:
+        remote = store.get(_store_path(day, CONVERSATION_FILENAME))
+    except StoreUnavailable as exc:
+        return f"failed: {exc}"
+    if remote is None:
+        return "synced"
+    local = load_conversation_summaries(entries_root, day)
+    rows = _parse_summaries(remote[0])
+    known = {row["id"] for row in rows}
+    rows = (rows + [row for row in local if row["id"] not in known])[-MAX_CONVERSATION_SUMMARIES:]
+    if rows != local:
+        target_dir = _date_dir(entries_root, day)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.chmod(0o700)
+        path = target_dir / CONVERSATION_FILENAME
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    return "synced"
+
+
 def write_daily_diary(payload: dict[str, Any], entries_root: str | Path = DEFAULT_ENTRIES_ROOT) -> Path:
     """Write the date-partitioned private Markdown note."""
     target_dir = _date_dir(entries_root, payload["date"])
@@ -527,6 +553,9 @@ def main(argv: list[str] | None = None) -> int:
             conversation_id=args.conversation_id,
             functions=args.functions,
         )
+    if not args.record_conversation:
+        # record_conversation_summary already merged the store's summaries.
+        refresh_local_summaries(args.entries_root, args.date)
     payload = build_daily_diary(
         as_of=args.date,
         repo_root=args.repo_root,
