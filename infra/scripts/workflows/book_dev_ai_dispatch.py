@@ -64,6 +64,7 @@ AGENT_INSTRUCTION_RE = re.compile(
     re.IGNORECASE,
 )
 VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)
+TERMINAL_VERDICT_RE = re.compile(r"[*_`>#\s]*VERDICT:\s*(PASS|BLOCKING)[*_`.\s]*", re.IGNORECASE)
 
 
 def _clean(value: Any, limit: int = 500) -> str:
@@ -542,8 +543,19 @@ Reviewer report:
 
 
 def parse_verdict(text: str) -> str:
-    matches = VERDICT_RE.findall(text or "")
-    return matches[-1].lower() if matches else "unknown"
+    """The verdict on the report's last non-empty line, standing alone (markdown emphasis allowed).
+
+    A quoted or illustrated `VERDICT: PASS` earlier in the report, a qualified one such as
+    `VERDICT: PASS (blocking issues remain)`, or a PASS after an earlier BLOCKING line is
+    ambiguous: "unknown", which sends the branch back for another round instead of a PR."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    terminal = TERMINAL_VERDICT_RE.fullmatch(lines[-1]) if lines else None
+    if not terminal:
+        return "unknown"
+    verdict = terminal.group(1).lower()
+    if verdict == "pass" and any(match.lower() == "blocking" for match in VERDICT_RE.findall("\n".join(lines[:-1]))):
+        return "unknown"
+    return verdict
 
 
 def _read(path: Path) -> str:

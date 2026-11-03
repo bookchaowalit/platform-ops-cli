@@ -111,6 +111,15 @@ def build_review_tests(tmp: Path) -> None:
     assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
     assert parse_verdict("VERDICT: PASS\nlater\nVERDICT: BLOCKING") == "blocking"
     assert parse_verdict("no verdict") == "unknown"
+    # Codex review 2026-11-03: only a standalone terminal verdict counts.
+    assert parse_verdict("`VERDICT: PASS`.\n") == "pass"
+    assert parse_verdict("> **VERDICT: BLOCKING**") == "blocking"
+    assert parse_verdict("VERDICT: PASS (blocking issues remain)") == "unknown"
+    assert parse_verdict("End with `VERDICT: PASS`.\nVERDICT: PASS\n- [P1] auth bypass in api.py") == "unknown"
+    assert parse_verdict("VERDICT: PASS\n\nFindings:\n- [P1] x") == "unknown"
+    assert parse_verdict("VERDICT: BLOCKING\nactually fine\nVERDICT: PASS") == "unknown"
+    assert parse_verdict("VERDICT: PASSED") == "unknown"
+    assert parse_verdict("") == "unknown"
     from book_dev_ai_dispatch import AGENT_INSTRUCTION_RE
     for path in ("AGENTS.md", "x/AGENTS.override.md", "CLAUDE.local.md", ".agents/skills/a/SKILL.md", ".codex/config.toml"):
         assert AGENT_INSTRUCTION_RE.search(path), path
