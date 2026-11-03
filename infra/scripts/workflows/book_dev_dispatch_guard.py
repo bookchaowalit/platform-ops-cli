@@ -402,21 +402,29 @@ def _http_write(program: str, args: list[str]) -> bool:
     return any(method.upper() not in {"GET", "HEAD", "OPTIONS"} for method in methods)
 
 
-def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, symbolic: bool) -> str | None:
+def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, from_link_dir: bool,
+                 dest_is_file: bool = False) -> str | None:
     """Where a new link points must pass the same write check as the link itself.
 
     Writes later in the command go through the link (`ln -s ../other out && printf x >
     out/f`) but are checked before it exists, so a link may only point inside the
-    working directory. A symbolic referent is relative to the link's directory, which
-    is either the destination or its parent, so both are checked; hard links and
-    `cp -s` sources are relative to the current directory."""
+    working directory. A plain symbolic referent is relative to the link's directory:
+    the destination when it is an existing directory (and ``dest_is_file`` is not set
+    by -T/-n), else its parent. A destination made later in the same command is
+    checked from its parent, which is never laxer. Hard links, `ln -r` and `cp -s/-l`
+    sources are relative to the current directory."""
     if target_dirs:
         sources, link_dirs = paths, list(target_dirs)
     elif len(paths) > 1:
-        sources, link_dirs = paths[:-1], [paths[-1], str(Path(paths[-1]).parent)]
+        sources, dest = paths[:-1], paths[-1]
+        resolved = _resolve(dest, ctx.here)
+        if resolved is None:
+            return "link location could not be resolved"
+        into_dir = resolved.is_dir() and not (dest_is_file and (Path(ctx.here, dest).is_symlink() or not dest.endswith("/")))
+        link_dirs = [dest if into_dir else str(Path(dest).parent)]
     else:
         sources, link_dirs = paths, []
-    for link_dir in (link_dirs or ["."]) if symbolic else ["."]:
+    for link_dir in (link_dirs or ["."]) if from_link_dir else ["."]:
         base = _resolve(link_dir, ctx.here)
         if base is None:
             return "link location could not be resolved"
@@ -427,6 +435,44 @@ def _link_reason(paths: list[str], target_dirs: list[str], ctx: _Ctx, symbolic: 
             if reason:
                 return f"links may only point inside the working directory ({reason})"
     return None
+
+
+def _carries_escaping_link(source: str, ctx: _Ctx) -> bool:
+    """Whether copying or moving ``source`` as-is would carry a symlink that may point out.
+
+    A symlink keeps its target text, so `a/link -> ../b` moved one level up points
+    outside. Only relative targets without `..` that pass the write check from the
+    root are safe anywhere inside the tree. Fails closed past GLOB_WALK_LIMIT."""
+    resolved = _resolve(source, ctx.here)
+    if resolved is None:
+        return True
+    start = Path(ctx.here, os.path.expanduser(source))
+
+    def escapes(link: Path) -> bool:
+        try:
+            target = os.readlink(link)
+        except OSError:
+            return True
+        return target.startswith(("/", "~")) or ".." in Path(target).parts or bool(_write_reason(target, _Ctx(ctx.root, ctx.policy)))
+
+    if start.is_symlink():
+        return escapes(start)
+    if not start.is_dir():
+        return False
+    seen = 0
+    for directory, dirs, files in os.walk(start):
+        seen += 1 + len(dirs) + len(files)
+        if seen > GLOB_WALK_LIMIT:
+            return True
+        if any(escapes(Path(directory, name)) for name in dirs + files if Path(directory, name).is_symlink()):
+            return True
+    return False
+
+
+def _long_opt(args: list[str], name: str, minimum: int) -> bool:
+    """Whether ``args`` holds ``name`` or an unambiguous abbreviation of it (getopt_long)."""
+    return any(len(opt) >= minimum and name.startswith(opt)
+               for opt in (item.split("=", 1)[0] for item in args if item.startswith("--")))
 
 
 def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
@@ -529,14 +575,31 @@ def _segment_reason(argv: list[str], ctx: _Ctx, depth: int) -> str | None:
         paths, opts = _parse(args, {"-t", "--target-directory", "-S", "--suffix", "-m", "--mode", "-o", "--owner", "-g", "--group"})
         target_dirs = opts.get("-t", []) + opts.get("--target-directory", [])
         targets = target_dirs or (paths[-1:] if len(paths) > 1 else [])
-        link_flag = r"-[A-Za-z]*s[A-Za-z]*|--sym.*" if program == "ln" else r"-[A-Za-z]*[sl][A-Za-z]*|--sym.*|--link"
-        if program == "ln" or (program == "cp" and any(re.fullmatch(link_flag, item) for item in args)):
-            symbolic = program == "ln" and any(re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*|--sym.*", item) for item in args)
-            reason = _link_reason(paths, target_dirs, ctx, symbolic)
-            if reason:
-                return reason
+        shorts = set("".join(item[1:] for item in args if re.fullmatch(r"-[A-Za-z]+", item)))
+        reason = None
+        if program == "ln":
+            symbolic = "s" in shorts or _long_opt(args, "--symbolic", 4)
+            relative = "r" in shorts or _long_opt(args, "--relative", 3)
+            dest_is_file = bool({"T", "n"} & shorts) or _long_opt(args, "--no-target-directory", 6) or _long_opt(
+                args, "--no-dereference", 6)
+            reason = _link_reason(paths, target_dirs, ctx, symbolic and not relative, dest_is_file)
+        elif program == "cp":
+            if {"s", "l"} & shorts or _long_opt(args, "--symbolic-link", 4) or _long_opt(args, "--link", 3):
+                reason = _link_reason(paths, target_dirs, ctx, False)
+            # -a/-d/-P/-r and friends copy symlinks as symlinks unless -L dereferences them.
+            keeps_links = bool(set("adPRr") & shorts) or any(_long_opt(args, name, 4) for name in (
+                "--archive", "--recursive", "--no-dereference")) or any(
+                re.fullmatch(r"--pr\w*=.*(links|all).*", item) for item in args)
+            if keeps_links and "L" not in shorts and not _long_opt(args, "--dereference", 4) and any(
+                _carries_escaping_link(item, ctx) for item in (paths if target_dirs else paths[:-1])
+            ):
+                reason = "copied symlinks would point outside the working directory; copy with -L"
+        if reason:
+            return reason
     elif program == "mv":
         targets = positional  # the source disappears too
+        if any(_carries_escaping_link(item, ctx) for item in positional):
+            return "moved symlinks would point outside the working directory"
     elif program == "dd":
         targets = [item[3:] for item in args if item.startswith("of=")]
     elif program in {"sed", "perl"} and any(re.fullmatch(r"-[A-Za-z]*i.*|--in-place(=.*)?", item) for item in args):

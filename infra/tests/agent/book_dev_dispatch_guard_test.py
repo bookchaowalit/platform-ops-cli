@@ -237,13 +237,31 @@ def main() -> int:
             "ln ../other-repo/package.json p && printf x > p",
             "cp -s /etc/hosts h",
             "cp --link ../other-repo/a b",
+            "ln -sr ../other-repo src/out && printf x > src/out/README.md",  # review 2: relative mode
+            "ln --relative -s ../other-repo src/out",
+            "ln --sy ../other-repo out",
+            "cp --li ../other-repo/a b",
         ]
         for command in links:
             for policy in ("release", "branch"):
                 assert bash(command, cwd, policy), (policy, command)
         (cwd / "src").mkdir(exist_ok=True)
+        # Review 2: an existing directory destination is the link's directory.
+        (cwd / "docs").mkdir()
+        assert bash("ln -s ../README.md docs", cwd) is None
+        assert bash("ln -sT ../README.md docs", cwd)  # -T: docs itself is the link
+        # Symlinks keep their target text when copied or moved.
+        (cwd / "nest" / "deep").mkdir(parents=True)
+        (cwd / "nest" / "up").symlink_to("../docs")
+        (cwd / "nest" / "deep" / "up2").symlink_to("../../docs")
+        (cwd / "nest" / "ok").symlink_to("deep")
+        for command in ("mv nest/up up", "cp -P nest/up up", "cp -a nest flat", "cp -r nest copy", "cp --archive nest x",
+                        "mv nest/deep d", "cp -s ../other-repo/a b"):
+            assert bash(command, cwd), command
+        for command in ("cp -rL nest copy", "cp nest/up up", "mv nest/ok ok2", "cp -P nest/ok ok3"):
+            assert bash(command, cwd) is None, (command, bash(command, cwd))
         for command in ("ln -s ../lib/util.py src/util.py", "ln -s src/app.py app.py", "ln -sf src current",
-                        "ln -s -t src ../README.md", "cp -r src build"):
+                        "ln -sr src/app.py src/link.py", "ln -s -t src ../README.md", "cp -r src build"):
             assert bash(command, cwd, "branch") is None, (command, bash(command, cwd, "branch"))
         for command in ("GIT_PAGER=cat git log -1", "EDITOR=true git commit --amend", "git grep -n foo", "git -C src log -1", "git -C src -C .. status", "git --no-pager log -1", "git -P diff", "git symbolic-ref -q --short HEAD", "env CI=1 make -C build", "env -u CI -i PATH=/usr/bin npm test",
                         "rg env --glob '*.py' infra", "git commit -m 'fix: document `git push` errors'",
