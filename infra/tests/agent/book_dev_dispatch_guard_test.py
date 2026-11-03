@@ -12,6 +12,7 @@ from pathlib import Path
 WORKFLOWS = Path(__file__).resolve().parents[2] / "scripts" / "workflows"
 sys.path.insert(0, str(WORKFLOWS))
 from book_dev_dispatch_guard import decide  # noqa: E402
+import book_dev_dispatch_guard as guard  # noqa: E402
 
 GUARD = WORKFLOWS / "book_dev_dispatch_guard.py"
 
@@ -221,7 +222,20 @@ def main() -> int:
         assert tool("Grep", cwd, path=str(home / ".claude"), pattern="access_token")
         assert tool("Glob", cwd, pattern="~/.claude/.cred*")
         assert tool("Glob", cwd, pattern=str(home) + "/.c*/auth.json")
-        assert tool("Glob", cwd, path=str(home), pattern="**/*.json")
+        # A filtered search of a directory holding a login cache is judged file by file.
+        fake_claude = cwd.parent / "fake-home" / ".claude"
+        fake_claude.mkdir(parents=True)
+        (fake_claude / ".credentials.json").write_text("{}")
+        (fake_claude / "settings.json").write_text("{}")
+        saved_files = guard.HOME_SECRET_FILES
+        guard.HOME_SECRET_FILES = saved_files + (fake_claude / ".credentials.json",)
+        try:
+            assert tool("Glob", cwd, path=str(fake_claude), pattern="settings.json") is None
+            assert tool("Grep", cwd, path=str(fake_claude), glob="settings.json", pattern="model") is None
+            assert tool("Glob", cwd, path=str(fake_claude), pattern="*.json")
+            assert tool("Grep", cwd, path=str(fake_claude), pattern="token")  # unfiltered
+        finally:
+            guard.HOME_SECRET_FILES = saved_files
         assert tool("Read", cwd, file_path=str(home / ".claude" / "settings.json")) is None
         # Codex review 2026-11-03: a new link is checked where it points, not only where it is made.
         links = [

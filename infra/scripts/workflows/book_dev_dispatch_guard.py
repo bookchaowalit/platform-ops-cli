@@ -885,7 +885,8 @@ def decide(payload: dict, policy: str) -> str | None:
         root = _resolve(str(tool_input.get("path") or "."), cwd) or cwd
         if isinstance(selector, str) and selector and _glob_selects_secret(selector, root, cwd, tool == "Glob"):
             return _deny("secret and credential files are off limits, also by glob")
-        if _contains_secret(str(root), cwd):
+        # A glob is walked file by file above; without one, a root such as ~ or ~/.claude is denied.
+        if not (isinstance(selector, str) and selector) and _contains_secret(str(root), cwd):
             return _deny("searching a directory that holds secret or credential files is off limits")
         # Without a glob, Grep reads every file below the root (or every file of its `type`),
         # so that set is checked; an unknown type counts as every file.
