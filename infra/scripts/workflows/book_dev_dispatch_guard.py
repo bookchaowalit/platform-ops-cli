@@ -345,6 +345,8 @@ def _fetch_reason(rest: list[str]) -> str | None:
     refs/remotes/, and --update-head-ok and --refmap are denied."""
     if _long_opt(rest, "--update-head-ok", 4) or _long_opt(rest, "--refmap", 5):
         return "git fetch --update-head-ok/--refmap can rewrite shared branches"
+    if _long_opt(rest, "--stdin", 4):
+        return "git fetch --stdin refspecs cannot be checked; pass them as arguments"
     positional, _ = _parse(rest, FETCH_VALUE_OPTS)
     multiple = _long_opt(rest, "--multiple", 4) or _long_opt(rest, "--all", 4)
     for refspec in [] if multiple else positional[1:]:
@@ -744,6 +746,14 @@ def _command_reason(command: str, ctx: _Ctx, depth: int = 0) -> str | None:
     return None
 
 
+# ripgrep's file types for Grep's `type` filter (the common ones; others scan every file).
+GREP_TYPE_GLOBS = {
+    "py": "*.{py,pyi}", "js": "*.{js,mjs,cjs,jsx,vue}", "ts": "*.{ts,tsx,mts,cts}", "go": "*.go", "rust": "*.rs",
+    "java": "*.{java,jsp,properties}", "md": "*.{md,markdown,mdown,mdx,mkd,mkdn,mdwn,ron}", "json": "*.{json,sarif}",
+    "yaml": "*.{yaml,yml}", "sh": "*.{sh,bash,zsh,csh,ksh,tcsh}", "html": "*.{htm,html,ejs}", "css": "*.{css,scss}",
+    "sql": "*.{sql,psql}", "toml": "*.toml", "rb": "*.{rb,gemspec}", "php": "*.{php,php3,php4,php5,phtml}",
+    "c": "*.{c,h,H,cats}", "cpp": "*.{C,cc,cpp,cxx,h,H,hh,hpp,hxx,inl}",
+}
 GLOB_WALK_LIMIT = 50000  # files and directories together
 GLOB_WALK_SECONDS = 5.0
 GLOB_MAX_PATTERNS = 64
@@ -801,7 +811,7 @@ def _glob_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out) + r"\Z", re.DOTALL)
 
 
-def _glob_selects_secret(selector: str, root: Path, cwd: Path | None = None) -> bool:
+def _glob_selects_secret(selector: str, root: Path, cwd: Path | None = None, absolute: bool = True) -> bool:
     """Whether a Grep/Glob glob could select a secret file under ``root``.
 
     The glob is matched against the real files (hidden files included, symlinked
@@ -811,8 +821,9 @@ def _glob_selects_secret(selector: str, root: Path, cwd: Path | None = None) -> 
     or GLOB_WALK_SECONDS all deny."""
     if SECRET_PATH_RE.search(" " + selector + " ") or _secret_resolved(selector, root):
         return True
-    # An absolute glob (`~/.claude/.cred*`) is walked from its literal prefix, not the root.
-    if selector.startswith(("/", "~")) and not any(selector.startswith(str(base) + "/") for base in (root, cwd) if base):
+    # An absolute Glob pattern (`~/.claude/.cred*`) is walked from its literal prefix, not the
+    # root. Grep globs (ripgrep) stay below the root, where a leading `/` only anchors them.
+    if absolute and selector.startswith(("/", "~")) and not any(selector.startswith(str(base) + "/") for base in (root, cwd) if base):
         literal = re.split(r"[*?\[{]", selector, maxsplit=1)[0]
         prefix = (literal if literal == selector else literal.rpartition("/")[0]) or "/"
         if _contains_secret(prefix, root) or _secret_resolved(prefix, root):
@@ -872,13 +883,15 @@ def decide(payload: dict, policy: str) -> str | None:
     if tool in {"Grep", "Glob"}:
         selector = tool_input.get("glob") if tool == "Grep" else tool_input.get("pattern")
         root = _resolve(str(tool_input.get("path") or "."), cwd) or cwd
-        if isinstance(selector, str) and selector and _glob_selects_secret(selector, root, cwd):
+        if isinstance(selector, str) and selector and _glob_selects_secret(selector, root, cwd, tool == "Glob"):
             return _deny("secret and credential files are off limits, also by glob")
         if _contains_secret(str(root), cwd):
             return _deny("searching a directory that holds secret or credential files is off limits")
-        # Without a glob, Grep reads every file below the root, so that whole tree is checked.
+        # Without a glob, Grep reads every file below the root (or every file of its `type`),
+        # so that set is checked; an unknown type counts as every file.
+        unfiltered = GREP_TYPE_GLOBS.get(str(tool_input.get("type") or ""), "**")
         if tool == "Grep" and not (isinstance(selector, str) and selector) and root.is_dir() and _glob_selects_secret(
-            "**", root, cwd
+            unfiltered, root, cwd, False
         ):
             return _deny("the search would read secret or credential files; narrow it with path or glob")
     for key in PATH_KEYS:

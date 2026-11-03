@@ -280,7 +280,7 @@ def main() -> int:
         for command in ("git fetch --update-head-ok origin +HEAD:refs/heads/main", "git fetch origin main:main",
                         "git fetch . HEAD:refs/heads/main", "git fetch origin +main:refs/heads/main",
                         "git fetch --depth 1 origin main:refs/tags/x", "git fetch --refmap=+refs/heads/*:refs/heads/* origin",
-                        "git fetch --update-he origin main"):
+                        "git fetch --update-he origin main", "git fetch --stdin origin"):
             assert bash(command, cwd, "branch"), command
         for command in ("git fetch origin", "git fetch origin main", "git fetch --depth 1 origin main",
                         "git fetch origin +main:refs/remotes/origin/main", "git fetch --multiple origin upstream",
@@ -355,6 +355,12 @@ def main() -> int:
         assert tool("Grep", cwd, path=str(cwd / "keys"), pattern=".")
         assert tool("Grep", cwd, path=str(cwd / "infra"), glob="*.py", pattern=".") is None
         assert tool("Grep", cwd, path=str(cwd / "infra" / "app.py"), pattern=".") is None
+        # Review: root-anchored Grep globs and `type` filters only select what ripgrep reads.
+        assert tool("Grep", cwd, path=str(cwd), glob="/*.py", pattern=".") is None
+        assert tool("Grep", cwd, path=str(cwd), glob="/**/*.py", pattern=".") is None
+        assert tool("Grep", cwd, path=str(cwd), type="py", pattern=".") is None
+        assert tool("Grep", cwd, path=str(cwd), type="nosuchtype", pattern=".")
+        assert tool("Glob", cwd, pattern="/*.py")  # the Glob tool reads `/` as the filesystem root
         assert tool("Grep", cwd, path=str(cwd), glob="**/*.py", pattern="environ") is None
         assert tool("Grep", cwd, path=str(cwd), glob="**/.env.example", pattern=".") is None
         assert tool("Read", cwd, file_path=str(cwd / "src" / "app.py")) is None
