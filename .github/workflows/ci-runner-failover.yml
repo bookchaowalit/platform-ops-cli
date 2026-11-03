@@ -1,0 +1,53 @@
+# Private-repo CI runs on the owner's machine (infra/ci-runner/local); Railway's runner-multi is the
+# fallback. Every 10 minutes this starts runner-multi when the local runners are offline and stops it
+# once they are back and its runners are idle (infra/scripts/platform/ci_runner_failover.py).
+# Public repository: GitHub-hosted runner, no billed minutes.
+# Environment ci-runner-failover (main only):
+#   RAILWAY_TOKEN          project token of Railway project ci-runners (dashboard only)
+#   CI_FAILOVER_GH_TOKEN   lists self-hosted runners of the repos and orgs in runners.txt
+#   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID  optional switch alerts
+name: CI runner failover
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Decide and print only
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-runner-failover
+  cancel-in-progress: false
+
+jobs:
+  failover:
+    if: github.repository == 'bookchaowalit/platform-ops-cli' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: ci-runner-failover
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      GH_TOKEN: ${{ secrets.CI_FAILOVER_GH_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Switch Railway runner-multi
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ] || [ -z "$GH_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN or CI_FAILOVER_GH_TOKEN not set; nothing switched"
+            exit 0
+          fi
+          args=()
+          [ "$DRY_RUN" = true ] && args+=(--dry-run)
+          python3 infra/scripts/platform/ci_runner_failover.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

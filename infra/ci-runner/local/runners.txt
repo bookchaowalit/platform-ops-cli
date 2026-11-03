@@ -1,0 +1,18 @@
+# Local primary for runner-multi: one name=url per line, same names and order as the Railway
+# RUNNERS var. Pilot 2026-11-03 (architecture-docs, sales-crm), then all sixteen the same day.
+architecture-docs=https://github.com/bookchaowalit/architecture-docs
+realestate-lead-extension=https://github.com/bookchaowalit/realestate-lead-extension
+digital-products=https://github.com/bookchaowalit/commerce-digital-products-web
+org-ai=https://github.com/bookchaowalit-ai
+sales-crm=https://github.com/bookchaowalit/sales-crm
+book-storybook=https://github.com/bookchaowalit/book-storybook
+azure-migration-design=https://github.com/bookchaowalit/azure-migration-design
+linerichmenu=https://github.com/bookchaowalit/marketing-linerichmenu-web
+business-catalog=https://github.com/bookchaowalit/business-catalog
+knowledge-base=https://github.com/bookchaowalit/knowledge-base
+media-assets=https://github.com/bookchaowalit/media-assets
+venture-freelance-dev=https://github.com/bookchaowalit/venture-freelance-dev
+venture-freelance-seo=https://github.com/bookchaowalit/venture-freelance-seo
+venture-saas=https://github.com/bookchaowalit/venture-saas
+venture-job-agency=https://github.com/bookchaowalit-agency/venture-job-agency
+solo-empire=https://github.com/bookchaowalit/solo-empire

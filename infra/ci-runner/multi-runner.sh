@@ -6,10 +6,16 @@
 # its registration files are then kept on the volume and reused on restart.
 set -euo pipefail
 export RUNNER_ALLOW_RUNASROOT=1
-export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/bin/job-cleanup.sh
+# Railway bills page cache, so the default hook drops caches after each job; a host that does not
+# bill memory (the local primary, see local/) sets JOB_CLEANUP=off and keeps them.
+if [[ ${JOB_CLEANUP:-on} != off ]]; then
+  export ACTIONS_RUNNER_HOOK_JOB_COMPLETED=/usr/local/bin/job-cleanup.sh
+fi
 
 CONFIG_ROOT=${CONFIG_ROOT:-/runner-config}
 LABELS=${LABELS:-self-hosted,linux,x64,railway}
+# Runner names are <prefix>-<name>, so the Railway and local registrations of a repo can coexist.
+NAME_PREFIX=${RUNNER_NAME_PREFIX:-railway}
 slot=0
 
 # Register everything first, then drop the registration tokens from the environment so no job
@@ -37,7 +43,7 @@ for spec in $specs; do
       exit 1
     fi
     (cd "$dir" && ./config.sh --unattended --replace --url "$url" --token "$token" \
-      --name "railway-$name" --labels "$LABELS" --work "/_work/$name")
+      --name "$NAME_PREFIX-$name" --labels "$LABELS" --work "/_work/$name")
     mkdir -p "$saved"
     cp -p "$dir"/.runner "$dir"/.credentials "$dir"/.credentials_rsaparams "$saved"/
     for f in .env .path; do [[ -f $dir/$f ]] && cp -p "$dir/$f" "$saved"/; done
@@ -47,13 +53,19 @@ done
 
 for var in "${!RUNNER_TOKEN_@}"; do unset "$var"; done
 
+# REGISTER_ONLY=1: register and exit, so registration tokens never sit in a long-running container.
+if [[ ${REGISTER_ONLY:-} == 1 ]]; then
+  echo "registered: $specs"
+  exit 0
+fi
+
 for spec in $specs; do
   name=${spec%%=*}
   (cd "/opt/runners/$name" && exec ./run.sh) &
   echo "$name: started for ${spec#*=}"
 done
 
-# If any runner stops, exit so Railway restarts the whole container.
+# If any runner stops, exit so the host (Railway, or Docker locally) restarts the whole container.
 wait -n
 echo "a runner exited; restarting" >&2
 exit 1

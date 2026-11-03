@@ -11,6 +11,30 @@ self-hosted runner so they do not consume paid GitHub Actions minutes.
   Start the database with a step: `run: start-postgres` and connect to
   `postgresql://postgres@127.0.0.1:5432/postgres`.
 
+## Local primary, Railway fallback (since 2026-11-03)
+
+The owner's machine is now the primary host for every runner below (owner decision 2026-11-03,
+replacing "never local" for CI: local runs are free, Railway runner-multi cost about $14 a month,
+almost all of it idle memory). `local/run.sh up` builds this image and runs the same `RUNNERS`
+(`local/runners.txt`, same names and order) in one Docker container named `ci-runner-local`:
+runners `local-<name>`, labels `self-hosted,linux,x64,railway,local`, so no workflow changes. The
+container has an 8 GB / 6 CPU limit, `--restart unless-stopped`, no Docker socket and no home-directory
+mount, so jobs cannot read this machine's credentials. `JOB_CLEANUP=off` keeps dependency caches
+(memory is not billed locally). Registrations live in `~/.local/share/ci-runner-local/config`.
+
+Railway runner-multi keeps its `railway-<name>` registrations as the fallback.
+`.github/workflows/ci-runner-failover.yml` (every 10 minutes, GitHub-hosted, environment
+`ci-runner-failover`) runs `infra/scripts/platform/ci_runner_failover.py`: if the first runner in
+`local/runners.txt` is offline for longer than a 3-minute grace period, it restarts runner-multi's deployment
+(`deploymentRestart`, runners online in about 65 s, measured 2026-11-03) and sends a Telegram alert. Once
+the local runner is back and no `railway-*` runner is busy, it stops runner-multi again (`deploymentStop`,
+volume and registrations kept). A job queued while both hosts are down waits for the fallback, because GitHub
+queues self-hosted jobs for up to 24 hours. Both hosts take jobs while both are up (GitHub has no runner
+priority).
+
+Adding a runner: append to `local/runners.txt` AND to Railway `RUNNERS` (same position), then
+`local/run.sh up` and the Railway steps below. The two must not drift, or the fallback misses repositories.
+
 ## Registration and credentials
 
 No long-lived GitHub token is stored on Railway. Each service gets a one-hour registration
