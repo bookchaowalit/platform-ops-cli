@@ -35,12 +35,14 @@ for import_path in (WORKFLOWS_DIR, UTILS_DIR):
 
 from _env import KNOWLEDGE_ROOT, PROJECT_ROOT  # noqa: E402
 from function_share import load_function_ids, parse_functions  # noqa: E402
+from knowledge_store import StoreConflict, StoreUnavailable, open_store  # noqa: E402
 from task_store import ClientConfigError, TaskStoreError, open_task_store  # noqa: E402
 
 
 CONTRACT = "solo-empire.daily-diary.v1"
-# Diary entries are private files in the knowledge-base checkout (SOLO_KNOWLEDGE_ROOT, default ../knowledge-base);
-# they are git-ignored there and never committed.
+# Diary entries live in the hosted knowledge store (platform-knowledge-api, space knowledge-base,
+# path diary/entries/YYYY/MM/DD/...) when it is configured; the files under the knowledge-base
+# checkout (SOLO_KNOWLEDGE_ROOT, default ../knowledge-base) are a private local copy, git-ignored.
 DEFAULT_ENTRIES_ROOT = KNOWLEDGE_ROOT / "diary" / "entries"
 DEFAULT_FILENAME = "auto-daily.md"
 CONVERSATION_FILENAME = "conversation-summaries.json"
@@ -70,6 +72,18 @@ def _date_dir(entries_root: str | Path, day: str) -> Path:
     return root / day[0:4] / day[5:7] / day[8:10]
 
 
+def open_diary_store():
+    """The hosted store, or None when it is not configured (or switched off)."""
+    try:
+        return open_store()
+    except StoreUnavailable:
+        return None
+
+
+def _store_path(day: str, filename: str) -> str:
+    return f"diary/entries/{day[0:4]}/{day[5:7]}/{day[8:10]}/{filename}"
+
+
 def load_conversation_summaries(
     entries_root: str | Path,
     day: str,
@@ -79,8 +93,15 @@ def load_conversation_summaries(
     if not path.is_file():
         return []
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _parse_summaries(path.read_bytes())
+    except OSError:
+        return []
+
+
+def _parse_summaries(raw: bytes) -> list[dict[str, str]]:
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return []
     if not isinstance(value, list):
         return []
@@ -145,22 +166,56 @@ def record_conversation_summary(
     target_dir.mkdir(parents=True, exist_ok=True)
     target_dir.chmod(0o700)
     path = target_dir / CONVERSATION_FILENAME
-    existing = load_conversation_summaries(entries_root, day)
-    match = next((row for row in existing if row["id"] == item_id), None)
-    if match is None or (function_ids and match.get("functions") != function_ids):
+    local = load_conversation_summaries(entries_root, day)
+
+    def apply(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+        rows = list(rows)
+        match = next((row for row in rows if row["id"] == item_id), None)
+        if match is not None and not (function_ids and match.get("functions") != function_ids):
+            return rows, False
         if match is not None:
-            existing[existing.index(match)] = item
+            rows[rows.index(match)] = item
         else:
-            existing.append(item)
-        path.write_text(
-            json.dumps(existing[-MAX_CONVERSATION_SUMMARIES:], ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+            rows.append(item)
+        return rows[-MAX_CONVERSATION_SUMMARIES:], True
+
+    def write_local(rows: list[dict[str, Any]]) -> None:
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         path.chmod(0o600)
-        status = "recorded"
-    else:
-        status = "already_recorded"
-    return {"status": status, "id": item_id, "path": str(path), "summary": item}
+
+    rows, changed = apply(local)
+    store = open_diary_store()
+    store_status = "off"
+    if store is not None:
+        remote_path = _store_path(day, CONVERSATION_FILENAME)
+        try:
+            for _attempt in range(3):
+                remote = store.get(remote_path)
+                remote_rows = _parse_summaries(remote[0]) if remote else []
+                # Keep the store's order, then anything only this machine had, then this item.
+                known = {row["id"] for row in remote_rows}
+                merged, _ = apply(remote_rows + [row for row in local if row["id"] not in known])
+                if remote is not None and merged == remote_rows:
+                    rows, store_status = merged, "synced"
+                    break
+                try:
+                    store.put(
+                        remote_path,
+                        (json.dumps(merged, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+                        if_version=remote[1] if remote else 0,
+                    )
+                except StoreConflict:
+                    continue
+                rows, store_status = merged, "synced"
+                break
+            else:
+                store_status = "failed: conflict"
+        except StoreUnavailable as exc:
+            store_status = f"failed: {exc}"
+    if changed or store_status == "synced":
+        write_local(rows)
+    status = "recorded" if changed else "already_recorded"
+    return {"status": status, "id": item_id, "path": str(path), "summary": item, "store": store_status}
 
 
 def _git_commits(repo_root: Path, day: str) -> list[dict[str, str]]:
@@ -413,8 +468,23 @@ def write_daily_diary(payload: dict[str, Any], entries_root: str | Path = DEFAUL
     target_dir.mkdir(parents=True, exist_ok=True)
     target_dir.chmod(0o700)
     target = target_dir / DEFAULT_FILENAME
-    target.write_text(render_daily_diary(payload), encoding="utf-8")
+    rendered = render_daily_diary(payload)
+    target.write_text(rendered, encoding="utf-8")
     target.chmod(0o600)
+    store = open_diary_store()
+    if store is not None:
+        remote_path = _store_path(payload["date"], DEFAULT_FILENAME)
+        try:
+            # The daily note is regenerated from the summaries, so the newest render wins.
+            for _attempt in range(3):
+                current = store.get(remote_path)
+                try:
+                    store.put(remote_path, rendered.encode("utf-8"), if_version=current[1] if current else 0)
+                    break
+                except StoreConflict:
+                    continue
+        except StoreUnavailable as exc:
+            print(f"warning: daily note kept locally; store {exc}", file=sys.stderr)
     return target
 
 
