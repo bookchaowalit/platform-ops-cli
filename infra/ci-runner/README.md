@@ -135,6 +135,14 @@ On 2026-10-25 the hub `bookchaowalit/solo-empire` took the sixteenth (last) slot
 `mcp-catalog-refresh` workflow (one small Python job a week; owner is the only collaborator). The image
 is now full: the next runner needs more slots in the image or a second service.
 
+On 2026-11-03 the image went to thirty-two slots (`ARG RUNNER_SLOTS`) for thirteen more runners:
+org runners `org-ar`, `org-desktop`, `org-game`, `org-products`, `org-startup`, `org-vr`, `org-mobile`,
+`org-backend`, `org-agency` and `org-website` (one per organization, so every private repository in it
+can run CI, starting with each org hub), and repo runners `personal-hub`, `bookchaowalit-empire` and
+`ai-stack` for the personal account. Checked the same day against the trust model: every one of those
+organizations has the owner as its only member and no outside collaborators, and the three personal
+repositories have the owner as their only collaborator. Idle runners stay small (about 20 MB each).
+
 On 2026-10-23 the four one-runner services (`runner-sales-crm`, `runner-book-storybook`,
 `runner-azure-migration-design`, `runner-marketing-linerichmenu-web`) moved into `runner-multi` and
 were stopped with `railway down` (services and volumes kept). To go back: redeploy the old service
