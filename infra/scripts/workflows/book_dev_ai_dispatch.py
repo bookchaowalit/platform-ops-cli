@@ -65,6 +65,8 @@ AGENT_INSTRUCTION_RE = re.compile(
 )
 VERDICT_RE = re.compile(r"^\W*VERDICT:\s*(PASS|BLOCKING)\b", re.IGNORECASE | re.MULTILINE)
 TERMINAL_VERDICT_RE = re.compile(r"[*_`>#\s]*VERDICT:\s*(PASS|BLOCKING)[*_`.\s]*", re.IGNORECASE)
+# Any earlier BLOCKING verdict, however it is decorated (`__VERDICT: BLOCKING__`, inline, quoted).
+EARLIER_BLOCKING_RE = re.compile(r"VERDICT:\s*BLOCKING", re.IGNORECASE)
 
 
 def _clean(value: Any, limit: int = 500) -> str:
@@ -553,7 +555,7 @@ def parse_verdict(text: str) -> str:
     if not terminal:
         return "unknown"
     verdict = terminal.group(1).lower()
-    if verdict == "pass" and any(match.lower() == "blocking" for match in VERDICT_RE.findall("\n".join(lines[:-1]))):
+    if verdict == "pass" and EARLIER_BLOCKING_RE.search("\n".join(lines[:-1])):
         return "unknown"
     return verdict
 

@@ -119,6 +119,9 @@ def build_review_tests(tmp: Path) -> None:
     assert parse_verdict("VERDICT: PASS\n\nFindings:\n- [P1] x") == "unknown"
     assert parse_verdict("VERDICT: BLOCKING\nactually fine\nVERDICT: PASS") == "unknown"
     assert parse_verdict("VERDICT: PASSED") == "unknown"
+    assert parse_verdict("__VERDICT: BLOCKING__\nVERDICT: PASS") == "unknown"
+    assert parse_verdict("_VERDICT: BLOCKING_") == "blocking"
+    assert parse_verdict("I first said VERDICT: BLOCKING\n**VERDICT: PASS**") == "unknown"
     assert parse_verdict("") == "unknown"
     from book_dev_ai_dispatch import AGENT_INSTRUCTION_RE
     for path in ("AGENTS.md", "x/AGENTS.override.md", "CLAUDE.local.md", ".agents/skills/a/SKILL.md", ".codex/config.toml"):
