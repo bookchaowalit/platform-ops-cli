@@ -173,6 +173,40 @@ class DiaryStoreTest(unittest.TestCase):
             self.assertEqual(len(rows), daily_diary.MAX_CONVERSATION_SUMMARIES)
 
 
+    def test_overlapping_bounded_copies_keep_the_newest_rows(self) -> None:
+        row = lambda i: {"id": f"r{i}", "topic": "t", "question_summary": "q", "outcome_summary": "o", "next_step": ""}
+        remote = [row(i) for i in range(51, 151)]
+        local = [row(i) for i in range(1, 101)]
+        merged = daily_diary.merge_summaries(remote, local)[-daily_diary.MAX_CONVERSATION_SUMMARIES:]
+        self.assertEqual([r["id"] for r in merged], [f"r{i}" for i in range(51, 151)])
+        # A row only this machine has lands after its neighbour, not at the end.
+        mixed = daily_diary.merge_summaries([row(1), row(3)], [row(1), row(2)])
+        self.assertEqual([r["id"] for r in mixed], ["r1", "r2", "r3"])
+
+    def test_a_misconfigured_store_is_a_failed_sync_not_local_only(self) -> None:
+        with patch.object(daily_diary, "open_store", side_effect=knowledge_store.StoreUnavailable("client.env must be chmod 600")):
+            store = daily_diary.open_diary_store()
+            self.assertIsNotNone(store)
+            with tempfile.TemporaryDirectory() as root:
+                result = record(root)
+                self.assertTrue(result["store"].startswith("failed: config"))
+        with patch.object(daily_diary, "open_store", return_value=None):
+            self.assertIsNone(daily_diary.open_diary_store())
+
+    def test_the_note_upload_is_rendered_from_the_summaries_current_at_upload(self) -> None:
+        store = FakeStore()
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            payload = build_daily_diary(as_of=DAY, repo_root=tempfile.gettempdir(), entries_root=root)
+            # Another machine records a summary after this note was built.
+            late = [{"id": "late", "topic": "x", "question_summary": "recorded late", "outcome_summary": "o", "next_step": ""}]
+            store.docs[SUMMARIES] = (json.dumps(late).encode(), 1)
+            rebuild = lambda: build_daily_diary(as_of=DAY, repo_root=tempfile.gettempdir(), entries_root=root,
+                                                summaries=daily_diary.merged_summaries(root, DAY)[0])
+            write_daily_diary(payload, root, rebuild=rebuild)
+            note = store.docs["diary/entries/2026/11/03/auto-daily.md"][0].decode("utf-8")
+            self.assertIn("recorded late", note)
+
+
 class KnowledgeStoreConfigTest(unittest.TestCase):
     def test_configuration_comes_from_env_or_client_env_and_is_https_only(self) -> None:
         with tempfile.TemporaryDirectory() as home:

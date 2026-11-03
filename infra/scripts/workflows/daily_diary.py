@@ -19,6 +19,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -72,12 +73,43 @@ def _date_dir(entries_root: str | Path, day: str) -> Path:
     return root / day[0:4] / day[5:7] / day[8:10]
 
 
+class _MisconfiguredStore:
+    """A store that is configured but unusable (bad URL, client.env permissions): every call
+    fails with a status, so callers report a failed sync instead of local-only mode."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    def get(self, path: str):
+        raise StoreUnavailable(f"config: {self.reason}")
+
+    def put(self, path: str, content: bytes, *, if_version: int | None) -> int:
+        raise StoreUnavailable(f"config: {self.reason}")
+
+
 def open_diary_store():
-    """The hosted store, or None when it is not configured (or switched off)."""
+    """The hosted store; None only when it is not configured or switched off."""
     try:
         return open_store()
-    except StoreUnavailable:
-        return None
+    except StoreUnavailable as exc:
+        return _MisconfiguredStore(str(exc))
+
+
+def merge_summaries(base: list[dict[str, Any]], other: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``base`` plus the rows only ``other`` has, each placed after its nearest preceding row
+    from ``other`` that is already present, so overlapping bounded copies keep their order
+    and trimming drops the oldest rows, not the newest."""
+    merged = list(base)
+    position = {row["id"]: i for i, row in enumerate(merged)}
+    anchor = -1
+    for row in other:
+        if row["id"] in position:
+            anchor = position[row["id"]]
+            continue
+        anchor += 1
+        merged.insert(anchor, row)
+        position = {r["id"]: i for i, r in enumerate(merged)}
+    return merged
 
 
 def _store_path(day: str, filename: str) -> str:
@@ -192,9 +224,8 @@ def record_conversation_summary(
             for _attempt in range(3):
                 remote = store.get(remote_path)
                 remote_rows = _parse_summaries(remote[0]) if remote else []
-                # Keep the store's order, then anything only this machine had, then this item.
-                known = {row["id"] for row in remote_rows}
-                merged, _ = apply(remote_rows + [row for row in local if row["id"] not in known])
+                # The store's rows with this machine's in their order, then this item.
+                merged, _ = apply(merge_summaries(remote_rows, local))
                 if remote is not None and merged == remote_rows:
                     rows, store_status = merged, "synced"
                     break
@@ -476,9 +507,7 @@ def merged_summaries(entries_root: str | Path, day: str) -> tuple[list[dict[str,
         return local, f"failed: {exc}"
     if remote is None:
         return local, "synced"
-    rows = _parse_summaries(remote[0])
-    known = {row["id"] for row in rows}
-    return (rows + [row for row in local if row["id"] not in known])[-MAX_CONVERSATION_SUMMARIES:], "synced"
+    return merge_summaries(_parse_summaries(remote[0]), local)[-MAX_CONVERSATION_SUMMARIES:], "synced"
 
 
 def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
@@ -496,9 +525,15 @@ def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
 
 
 def write_daily_diary(
-    payload: dict[str, Any], entries_root: str | Path = DEFAULT_ENTRIES_ROOT, *, upload: bool = True
+    payload: dict[str, Any],
+    entries_root: str | Path = DEFAULT_ENTRIES_ROOT,
+    *,
+    upload: bool = True,
+    rebuild: Callable[[], dict[str, Any]] | None = None,
 ) -> Path:
-    """Write the date-partitioned private Markdown note."""
+    """Write the date-partitioned private Markdown note. ``rebuild`` renders the note again
+    from the store's current summaries right before each upload attempt, so a note written
+    meanwhile by another machine is never replaced by a staler render."""
     target_dir = _date_dir(entries_root, payload["date"])
     target_dir.mkdir(parents=True, exist_ok=True)
     target_dir.chmod(0o700)
@@ -513,8 +548,9 @@ def write_daily_diary(
             # The daily note is regenerated from the summaries, so the newest render wins.
             for _attempt in range(3):
                 current = store.get(remote_path)
+                body = render_daily_diary(rebuild()) if rebuild else rendered
                 try:
-                    store.put(remote_path, rendered.encode("utf-8"), if_version=current[1] if current else 0)
+                    store.put(remote_path, body.encode("utf-8"), if_version=current[1] if current else 0)
                     break
                 except StoreConflict:
                     continue
@@ -582,7 +618,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # A note built without the store's summaries is kept local, never uploaded over the stored one.
-    output_path = write_daily_diary(payload, args.entries_root, upload=upload) if writing else None
+    def rebuild() -> dict[str, Any]:
+        rows, _ = merged_summaries(args.entries_root, args.date)
+        return build_daily_diary(as_of=args.date, repo_root=args.repo_root, entries_root=args.entries_root,
+                                 summaries=rows)
+
+    output_path = (
+        write_daily_diary(payload, args.entries_root, upload=upload, rebuild=rebuild) if writing else None
+    )
     if writing and not upload:
         print("warning: store summaries unavailable; daily note kept locally only", file=sys.stderr)
     if args.json:
