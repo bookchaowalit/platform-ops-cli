@@ -137,6 +137,25 @@ class DiaryStoreTest(unittest.TestCase):
             note = store.docs["diary/entries/2026/11/03/auto-daily.md"][0].decode("utf-8")
             self.assertIn("from the laptop", note)
 
+    def test_a_preview_writes_nothing_and_a_failed_refresh_does_not_upload(self) -> None:
+        store = FakeStore()
+        other = [{"id": "elsewhere", "topic": "x", "question_summary": "q", "outcome_summary": "o", "next_step": ""}]
+        store.docs[SUMMARIES] = (json.dumps(other).encode(), 1)
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--json"]), 0)
+            self.assertFalse(Path(root, "2026").exists())
+            self.assertEqual(store.puts, [])
+
+        class Down(FakeStore):
+            def get(self, path: str):
+                raise knowledge_store.StoreUnavailable("503")
+
+        down = Down()
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=down):
+            self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--write", "--json"]), 0)
+            self.assertTrue(Path(root, "2026/11/03/auto-daily.md").is_file())
+            self.assertEqual(down.puts, [])
+
     def test_merged_summaries_stay_bounded_on_the_duplicate_path(self) -> None:
         store = FakeStore()
         many = [{"id": f"r{i}", "topic": "t", "question_summary": "q", "outcome_summary": "o", "next_step": ""}

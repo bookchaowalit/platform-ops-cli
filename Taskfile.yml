@@ -93,6 +93,8 @@ tasks:
       EMPIRE_CLIENT_CONFIG: /nonexistent/empire-platform/client.env
       SOLO_EMPIRE_TASKS_BACKEND: ""
       EMPIRE_TASKS_API: ""
+      SOLO_DIARY_STORE: "off"
+      EMPIRE_KNOWLEDGE_API: ""
     cmds:
       - python3 infra/tests/run_all.py {{.CLI_ARGS}}
 

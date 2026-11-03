@@ -488,7 +488,9 @@ def refresh_local_summaries(entries_root: str | Path, day: str) -> str:
     return "synced"
 
 
-def write_daily_diary(payload: dict[str, Any], entries_root: str | Path = DEFAULT_ENTRIES_ROOT) -> Path:
+def write_daily_diary(
+    payload: dict[str, Any], entries_root: str | Path = DEFAULT_ENTRIES_ROOT, *, upload: bool = True
+) -> Path:
     """Write the date-partitioned private Markdown note."""
     target_dir = _date_dir(entries_root, payload["date"])
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +499,7 @@ def write_daily_diary(payload: dict[str, Any], entries_root: str | Path = DEFAUL
     rendered = render_daily_diary(payload)
     target.write_text(rendered, encoding="utf-8")
     target.chmod(0o600)
-    store = open_diary_store()
+    store = open_diary_store() if upload else None
     if store is not None:
         remote_path = _store_path(payload["date"], DEFAULT_FILENAME)
         try:
@@ -553,16 +555,24 @@ def main(argv: list[str] | None = None) -> int:
             conversation_id=args.conversation_id,
             functions=args.functions,
         )
-    if not args.record_conversation:
+    writing = args.write or args.record_conversation
+    upload = True
+    if conversation_record is not None:
         # record_conversation_summary already merged the store's summaries.
-        refresh_local_summaries(args.entries_root, args.date)
+        upload = conversation_record.get("store") in {"synced", "off"}
+    elif args.write:
+        # Only a real write refreshes the local copy; a preview changes nothing on disk.
+        upload = refresh_local_summaries(args.entries_root, args.date) in {"synced", "off"}
     payload = build_daily_diary(
         as_of=args.date,
         repo_root=args.repo_root,
         entries_root=args.entries_root,
     )
 
-    output_path = write_daily_diary(payload, args.entries_root) if (args.write or args.record_conversation) else None
+    # A note built without the store's summaries is kept local, never uploaded over the stored one.
+    output_path = write_daily_diary(payload, args.entries_root, upload=upload) if writing else None
+    if writing and not upload:
+        print("warning: store summaries unavailable; daily note kept locally only", file=sys.stderr)
     if args.json:
         result = dict(payload)
         if conversation_record:

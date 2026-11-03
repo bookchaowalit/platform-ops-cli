@@ -26,6 +26,9 @@ def run(path: Path, timeout: int) -> tuple[Path, int, str]:
         "EMPIRE_CLIENT_CONFIG": "/nonexistent/empire-platform/client.env",
         "SOLO_EMPIRE_TASKS_BACKEND": "",
         "EMPIRE_TASKS_API": "",
+        # Never reach the hosted knowledge store from tests, even with EMPIRE_KNOWLEDGE_API exported.
+        "SOLO_DIARY_STORE": "off",
+        "EMPIRE_KNOWLEDGE_API": "",
         "PYTHONUTF8": "1",
     }
     try:
