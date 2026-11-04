@@ -162,6 +162,18 @@ class DiaryStoreTest(unittest.TestCase):
             self.assertTrue(Path(root, "2026/11/03/auto-daily.md").is_file())
             self.assertEqual(down.puts, [])
 
+    def test_a_write_on_a_fresh_machine_uploads_the_stores_summaries(self) -> None:
+        store = FakeStore()
+        other = [{"id": "elsewhere", "topic": "recorded on another machine", "question_summary": "q",
+                  "outcome_summary": "o", "next_step": ""}]
+        store.docs[SUMMARIES] = (json.dumps(other).encode(), 1)
+        with tempfile.TemporaryDirectory() as root, patch.object(daily_diary, "open_diary_store", return_value=store):
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(daily_diary.main(["--date", DAY, "--entries-root", root, "--write"]), 0)
+            note = store.docs["diary/entries/2026/11/03/auto-daily.md"][0].decode()
+            self.assertIn("recorded on another machine", note)
+            self.assertIn("recorded on another machine", Path(root, "2026/11/03/auto-daily.md").read_text())
+
     def test_merged_summaries_stay_bounded_on_the_duplicate_path(self) -> None:
         store = FakeStore()
         many = [{"id": f"r{i}", "topic": "t", "question_summary": "q", "outcome_summary": "o", "next_step": ""}
