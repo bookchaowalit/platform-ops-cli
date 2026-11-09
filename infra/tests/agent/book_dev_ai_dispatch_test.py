@@ -283,7 +283,7 @@ def build_review_tests(tmp: Path) -> None:
             raise AssertionError(f"expected rejection: {bad}")
         except ValueError:
             pass
-    models = dict(builder_model="gpt-6-luna", reviewer_model="gpt-6-astra")
+    models = dict(builder_model="gpt-6-luna", reviewer_model="gpt-6.1-sol")
     stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261109T0000{i:02d}Z" for i in range(10)])
     with stamps, mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
         report = dispatch(**codex, **models, dry_run=True)
@@ -294,7 +294,7 @@ def build_review_tests(tmp: Path) -> None:
         assert {"sandbox_workspace_write.exclude_slash_tmp=true",
                 "sandbox_workspace_write.exclude_tmpdir_env_var=true"} <= set(build_cmd)
         assert build_cmd[build_cmd.index("-m") + 1] == "gpt-6-luna"
-        assert review_cmd[review_cmd.index("-m") + 1] == "gpt-6-astra"
+        assert review_cmd[review_cmd.index("-m") + 1] == "gpt-6.1-sol"
         assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
         assert report["flow"]["same_family"] is True
         # No user config, MCP servers, plugins or app connectors in either Codex role.
@@ -324,13 +324,13 @@ def build_review_tests(tmp: Path) -> None:
             report = dispatch(**codex, **models)
         assert report["status"] == "dispatched", report
         assert [c["label"] for c in calls] == ["codex-build", "codex-review-0", "codex-fix-1", "codex-review-1"]
-        assert [c["model"] for c in calls] == ["gpt-6-luna", "gpt-6-astra", "gpt-6-luna", "gpt-6-astra"]
+        assert [c["model"] for c in calls] == ["gpt-6-luna", "gpt-6.1-sol", "gpt-6-luna", "gpt-6.1-sol"]
         assert "do not commit" in calls[0]["prompt"].lower() and "do not commit" in calls[2]["prompt"].lower()
         log = subprocess.run(["git", "-C", str(repo), "log", "--format=%s", report["flow"]["branch"]],
                              capture_output=True, text=True).stdout.splitlines()
         assert [line.split(":")[0] for line in log] == ["codex-fix-1", "codex-build", "init"], log
         assert pr.call_args.kwargs["head"] == report["flow"]["reviews"][-1]["head"]
-        assert "gpt-6-luna" in pr.call_args.kwargs["body"] and "gpt-6-astra" in pr.call_args.kwargs["body"]
+        assert "gpt-6-luna" in pr.call_args.kwargs["body"] and "gpt-6.1-sol" in pr.call_args.kwargs["body"]
 
         # A builder that writes a credential it read elsewhere never reaches the reviewer or a PR.
         calls.clear()

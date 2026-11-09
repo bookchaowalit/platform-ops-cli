@@ -42,7 +42,7 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 
 ### Builder แบบ Codex (Luna) และการเลือกโมเดลแยกตามบทบาท (spec 2026-11-09)
 
-ใช้โควตา ChatGPT ที่มีอยู่แล้วเป็น worker ราคาถูก: `--providers codex --reviewer codex --builder-model gpt-6-luna --reviewer-model gpt-6-astra`
+ใช้โควตา ChatGPT ที่มีอยู่แล้วเป็น worker ราคาถูก (reviewer ใช้ Sol ไม่ใช้ Astra เพราะ Astra กินโควตามากกว่าหลายเท่า, 2026-11-09): `--providers codex --reviewer codex --builder-model gpt-6-luna --reviewer-model gpt-6.1-sol`
 (หรือ env `BOOK_DEV_DISPATCH_PROVIDERS=codex`, `BOOK_DEV_BUILDER_MODEL`, `BOOK_DEV_REVIEWER_MODEL`)
 
 ข้อกำหนด:

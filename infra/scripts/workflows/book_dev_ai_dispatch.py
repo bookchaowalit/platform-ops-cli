@@ -16,7 +16,7 @@ Usage:
     python3 book_dev_ai_dispatch.py --providers claude --mode plan
     python3 book_dev_ai_dispatch.py --providers claude --reviewer codex
     python3 book_dev_ai_dispatch.py --providers codex --reviewer codex \
-        --builder-model gpt-6-luna --reviewer-model gpt-6-astra
+        --builder-model gpt-6-luna --reviewer-model gpt-6.1-sol
 """
 
 from __future__ import annotations
@@ -1135,7 +1135,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reviewer-model",
         default=os.environ.get(REVIEWER_MODEL_ENV),
-        help="Reviewer model in the build-review flow, e.g. gpt-6-astra",
+        help="Reviewer model in the build-review flow, e.g. gpt-6.1-sol",
     )
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--timeout-sec", type=int, default=1800)
