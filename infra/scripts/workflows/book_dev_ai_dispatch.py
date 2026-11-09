@@ -496,6 +496,9 @@ def _children_of(parents: set[int]) -> set[int]:
     return found
 
 
+REAP_TIMEOUT_SEC = 10
+
+
 def _descendants() -> set[int]:
     tree: set[int] = set()
     frontier = {os.getpid()}
@@ -530,12 +533,21 @@ def _kill_descendants() -> None:
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        for pid in frozen:
-            try:
-                os.waitpid(pid, 0)
-            except ChildProcessError:
-                pass  # not our direct child; it is reparented to us and reaped on a later pass
-        time.sleep(0.05)
+        # Reap without blocking: a process stuck in uninterruptible I/O must not hang the dispatcher.
+        deadline = time.monotonic() + REAP_TIMEOUT_SEC
+        waiting = set(frozen)
+        while waiting and time.monotonic() < deadline:
+            for pid in list(waiting):
+                try:
+                    done, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    done = pid  # not our direct child: reparented to us, reaped on a later pass
+                if done:
+                    waiting.discard(pid)
+            if waiting:
+                time.sleep(0.05)
+        if waiting and any(Path(f"/proc/{pid}").exists() for pid in waiting):
+            raise ContainmentError(f"{len(waiting)} builder process(es) did not exit after SIGKILL")
     if _descendants():
         raise ContainmentError("builder processes survived the kill")
 
@@ -751,7 +763,11 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
 
 
 # Dispatcher-run index commands on the builder's tree run no hooks and no fsmonitor program.
-SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+# Signing is off too: gpg.program / gpg.ssh.program may name a script in the checkout.
+SAFE_GIT = (
+    "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+    "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "gc.auto=0",
+)
 # Clean/smudge filters run on `git add`/`git status` through a shell. Only the exact commands
 # `git lfs install` writes are trusted, run by a program resolved from PATH outside the repository.
 TRUSTED_FILTER_RE = re.compile(r"(git-lfs) (clean -- %f|smudge -- %f|filter-process)")
@@ -992,7 +1008,7 @@ def build_review(
             # The sandboxed builder cannot write the gitdir; commit its edits with hooks off.
             added = wt(*SAFE_GIT, "add", "-A")
             committed = added if added.returncode != 0 else _git(
-                worktree, *SAFE_GIT, "commit", "-q", "--no-verify", "-m", f"{label}: {title}"
+                worktree, *SAFE_GIT, "commit", "-q", "--no-verify", "--no-gpg-sign", "-m", f"{label}: {title}"
             )
             if committed.returncode != 0:
                 result.update(status="failed", error=f"dispatcher commit failed: {_clean(committed.stderr, 300)}")

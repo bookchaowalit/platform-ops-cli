@@ -365,6 +365,22 @@ def build_review_tests(tmp: Path) -> None:
         assert report["flow"]["worktree_kept"] is True
         pr.assert_not_called()
 
+        # The dispatcher's commit never signs: gpg.program could be a script in the checkout.
+        signer = tmp / "signer.sh"
+        signed = tmp / "signed.txt"
+        signer.write_text(f"#!/bin/sh\ntouch {signed}\nexit 1\n")
+        signer.chmod(0o755)
+        subprocess.run(["git", "-C", str(repo), "config", "commit.gpgsign", "true"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "gpg.program", str(signer)], check=True)
+        verdicts[:] = ["PASS"]
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=edit_only_build), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ):
+            report = dispatch(**codex, **models)
+        subprocess.run(["git", "-C", str(repo), "config", "--unset", "commit.gpgsign"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "--unset", "gpg.program"], check=True)
+        assert report["status"] == "dispatched" and not signed.exists(), report
+
         # A Codex build that edits nothing still ends as no_changes.
         calls.clear()
         with mock.patch("book_dev_ai_dispatch.run_provider",
@@ -483,6 +499,20 @@ def build_review_tests(tmp: Path) -> None:
     _run_process([sys.executable, str(daemon), str(escaped)], input=None, cwd=str(tmp), env=None, timeout=30)
     time.sleep(2)
     assert not escaped.exists(), "a setsid double-fork daemon does not outlive the call"
+    # A process that ignores reaping is reported, not waited on forever.
+    import book_dev_ai_dispatch as dispatch_module
+    with mock.patch.object(dispatch_module, "_descendants", side_effect=[{999999}, set(), {999999}]), \
+            mock.patch.object(dispatch_module.os, "kill"), mock.patch.object(dispatch_module.os, "waitpid", return_value=(0, 0)), \
+            mock.patch.object(dispatch_module, "REAP_TIMEOUT_SEC", 0.2), \
+            mock.patch.object(dispatch_module.Path, "exists", return_value=True):
+        began = time.monotonic()
+        try:
+            dispatch_module._kill_descendants()
+            raise AssertionError("expected ContainmentError")
+        except dispatch_module.ContainmentError:
+            pass
+        assert time.monotonic() - began < 5
+
     # Containment fails closed: no subreaper means no build.
     from book_dev_ai_dispatch import ContainmentError
     fake_libc = mock.Mock()
