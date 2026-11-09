@@ -59,6 +59,12 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 - `--builder-model` ส่งเป็น `-m` ให้ Codex และ `--model` ให้ Claude; `--reviewer-model` ส่งเป็น `-m` ให้ Codex reviewer ถ้าไม่ระบุใช้ค่าเริ่มต้นของ CLI
 - **effort ของ Codex แยกตามบทบาท** (2026-11-10): builder `model_reasoning_effort=xhigh` (`BOOK_DEV_BUILDER_EFFORT`), reviewer `high` (`BOOK_DEV_REVIEWER_EFFORT`); ค่าอื่นนอก `minimal|low|medium|high|xhigh` ถูกปฏิเสธ
 - **ส่งต่อให้ Claude เมื่อแก้ไม่ผ่าน** (2026-11-10): ถ้า builder แบบ Codex แก้ครบ 2 รอบแล้ว reviewer ยัง BLOCKING, Claude (`BOOK_DEV_ESCALATION_MODEL`, ค่าเริ่มต้น `opus`) รันแบบ read-only (plan mode, guard, env ถูกตัด, checkout แยกของ commit นั้น) ได้รับรายงานรีวิวทุกรอบ + diff แล้วเขียนแผนแก้ละเอียด จากนั้น builder ได้อีก 1 รอบตามแผน แล้ว reviewer รีวิวใหม่ ถ้ายังไม่ผ่าน หรือ Claude ให้แผนไม่ได้ จะเป็น `review_blocked` ให้เจ้าของ (แผนอยู่ที่ `dispatch/<stamp>/claude-plan.last-message.md`, `flow.escalation`) ปิดด้วย `BOOK_DEV_ESCALATE=none`; builder `claude` ไม่ส่งต่อหาตัวเอง
+- **Claude วางแผน + worker หลายตัวพร้อมกัน** (2026-11-10, builder `codex` เท่านั้น):
+  1. Claude (`BOOK_DEV_ESCALATION_MODEL`, read-only บน checkout ของ base) อ่าน ticket แล้วคืนแผน JSON: งานย่อย 1–6 ชิ้น แต่ละชิ้นมี spec, acceptance และ `paths` ที่แก้ได้ (ห้ามซ้อนกัน ห้าม wildcard/`..`/ไฟล์คำสั่ง agent) แผนอยู่ที่ `dispatch/<stamp>/claude-split.last-message.md`
+  2. งานย่อยเดียว (หรือแผนใช้ไม่ได้): flow ปกติ โดยใส่ spec ของ Claude ใน prompt ของ builder
+  3. หลายงานย่อย: dispatcher ลูก 1 ตัวต่องาน (process แยก, worktree/branch/sandbox/การกัน process ของตัวเอง, `--branch-only --no-plan`) รันพร้อมกันสูงสุด `BOOK_DEV_PARALLEL` (ค่าเริ่มต้น 3) แต่ละตัว Luna สร้าง → Sol รีวิว → แก้/ส่งต่อ Claude ตามปกติ งานย่อยที่แก้ไฟล์นอก `paths` ของตัวเองจะหยุด (`out_of_scope`)
+  4. ทุกงานย่อยต้องผ่าน (ไม่งั้น `review_blocked` และเก็บ branch ไว้) แล้ว dispatcher รวมด้วย git plumbing (`read-tree`/`update-index --cacheinfo`/`write-tree`/`commit-tree`, ไม่มี merge driver/filter/hook) เป็น commit เดียวที่มี parent เป็น base + ทุกงานย่อย Sol รีวิวภาพรวมอีกรอบ (แก้/ส่งต่อได้) แล้วเปิด PR เดียว
+  ปิด planner ด้วย `BOOK_DEV_PLANNER=none` หรือ `--no-plan`; `flow.planner` และ `flow.subtasks` อยู่ใน report
 - builder `grok` และ Antigravity (`agy`) ยังไม่รองรับใน flow นี้: ไม่มี guard hook และ `agy --sandbox` ไม่ได้ระบุว่ากัน network/การเขียนนอก workspace
 
 ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ

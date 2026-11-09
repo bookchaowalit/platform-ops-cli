@@ -109,8 +109,10 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
 def build_review_tests(tmp: Path) -> None:
     # Model defaults come from the environment; the timer's values must not leak into these tests.
     for name in ("BOOK_DEV_BUILDER_MODEL", "BOOK_DEV_REVIEWER_MODEL", "BOOK_DEV_BUILDER_EFFORT",
-                 "BOOK_DEV_REVIEWER_EFFORT", "BOOK_DEV_ESCALATE", "BOOK_DEV_ESCALATION_MODEL"):
+                 "BOOK_DEV_REVIEWER_EFFORT", "BOOK_DEV_ESCALATE", "BOOK_DEV_ESCALATION_MODEL", "BOOK_DEV_PARALLEL"):
         os.environ.pop(name, None)
+    # The flow tests below exercise one builder; the planner has its own tests (planner_tests).
+    os.environ["BOOK_DEV_PLANNER"] = "none"
     assert parse_verdict("x\nVERDICT: PASS") == "pass"
     assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
     assert parse_verdict("VERDICT: PASS\nlater\nVERDICT: BLOCKING") == "blocking"
@@ -654,6 +656,164 @@ def build_review_tests(tmp: Path) -> None:
     assert not Path(report["flow"]["worktree"]).exists()
 
 
+def planner_tests(tmp: Path) -> None:
+    from book_dev_ai_dispatch import integrate, parse_plan, subtask_ticket, validate_plan
+
+    # Plan parsing: the last ```json block; ids, specs and disjoint relative paths are required.
+    good = {"subtasks": [{"id": "api", "title": "API", "spec": "add GET /x", "acceptance": "test passes",
+                          "paths": ["src/api/", "tests/test_api.py"]},
+                         {"id": "ui", "title": "UI", "spec": "show x", "acceptance": "renders", "paths": ["web/x.tsx"]}]}
+    text = "thinking\n```json\n{\"subtasks\": []}\n```\nfinal:\n```json\n" + json.dumps(good) + "\n```\n"
+    plan = parse_plan(text)
+    assert plan and [t["id"] for t in plan] == ["api", "ui"], plan
+    assert parse_plan("no json") is None
+    for bad_paths in (["src/api/x.py"], ["/etc/passwd"], ["../up"], ["src/*.py"], ["AGENTS.md"], []):
+        broken = json.loads(json.dumps(good))
+        broken["subtasks"][1]["paths"] = bad_paths
+        assert validate_plan(broken) is None, bad_paths  # overlap with src/api/, absolute, parent, glob, agent file, empty
+    dup = json.loads(json.dumps(good))
+    dup["subtasks"][1]["id"] = "api"
+    assert validate_plan(dup) is None
+    child = subtask_ticket({"selected": {"task": {"id": 1, "title": "T"}, "repository": {"path": "/r"}}}, plan[0])
+    assert child["selected"]["scope_paths"] == ["src/api/", "tests/test_api.py"]
+    assert child["selected"]["task"]["title"].startswith("[api]") and "add GET /x" in child["selected"]["task"]["description"]
+
+    # The builder prompt carries the (sub)task's spec and acceptance, not only its title.
+    prompt = build_prompt(child, mode="implement", branch="ai/x", worktree=tmp)
+    assert "add GET /x" in prompt and "Acceptance: test passes" in prompt
+
+    # A timed-out child gets SIGTERM, then SIGKILL; run_child returns promptly.
+    from book_dev_ai_dispatch import run_child
+    import time
+    began = time.monotonic()
+    out = run_child([sys.executable, "-c", "import time; time.sleep(60)"], timeout=1)
+    assert out["status"] == "timeout" and time.monotonic() - began < 30
+
+    # Integration: plumbing combines disjoint subtask branches into one commit (parents: base + heads).
+    repo = tmp / "integ"
+    git_repo(repo)
+    def run(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
+    (repo / "keep.txt").write_text("k\n")
+    (repo / "gone.txt").write_text("g\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    base = run("rev-parse", "HEAD")
+    heads = {}
+    for sid, files in (("a", {"src/a.py": "A\n"}), ("b", {"web/b.tsx": "B\n"})):
+        run("checkout", "-q", "-b", f"sub-{sid}", base)
+        for name, body in files.items():
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text(body)
+        if sid == "b":
+            run("rm", "-q", "gone.txt")
+        run("add", "-A")
+        run("commit", "-q", "-m", sid)
+        heads[sid] = run("rev-parse", "HEAD")
+    run("checkout", "-q", "main")
+    combined = integrate(repo, base=base, heads=heads, branch="ai/combined", message="combined")
+    assert combined and run("rev-parse", "refs/heads/ai/combined") == combined
+    assert set(run("show", "-s", "--format=%P", combined).split()) == {base, *heads.values()}
+    files = set(run("ls-tree", "-r", "--name-only", combined).split())
+    assert files == {"keep.txt", "src/a.py", "web/b.tsx"}, files
+    # Two subtasks changing the same path, or a head not on base, refuse.
+    run("checkout", "-q", "-b", "sub-c", base)
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src/a.py").write_text("C\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "c")
+    clash = run("rev-parse", "HEAD")
+    run("checkout", "-q", "main")
+    assert integrate(repo, base=base, heads={"a": heads["a"], "c": clash}, branch="ai/x", message="m") is None
+    orphan = run("commit-tree", run("rev-parse", "HEAD^{tree}"), "-m", "orphan")
+    assert integrate(repo, base=base, heads={"o": orphan}, branch="ai/y", message="m") is None
+
+    # Orchestration (planner and children mocked): split -> children in parallel -> combine -> review -> PR.
+    ticket_path = sample_ticket(tmp / "orch")
+    work = tmp / "orch" / "repo"
+    (work / ".git").rmdir()
+    git_repo(work)
+    origin = tmp / "orch" / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(work), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(work), "push", "-q", "origin", "main"], check=True)
+    obase = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    child_heads = {}
+    for sid, name in (("api", "src/api/x.py"), ("ui", "web/x.tsx")):
+        subprocess.run(["git", "-C", str(work), "checkout", "-q", "-b", f"ai/sub-{sid}", obase], check=True)
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).write_text(sid)
+        subprocess.run(["git", "-C", str(work), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(work), "commit", "-q", "-m", sid], check=True)
+        child_heads[sid] = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(work), "checkout", "-q", "main"], check=True)
+
+    planned = {"provider": "claude", "status": "dispatched", "last_message": "plan"}
+    children_seen: list[list[str]] = []
+
+    def fake_child(command, timeout):
+        children_seen.append(command)
+        sid = command[command.index("--stamp") + 1].rsplit("-", 1)[1]
+        return {"status": "passed", "flow": {"branch": f"ai/sub-{sid}", "head": child_heads[sid]}}
+
+    reviews: list[dict] = []
+
+    def fake_review(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
+        reviews.append({"label": label, "prompt": prompt, "files": sorted(p.name for p in cwd.rglob("*") if p.is_file() and ".git" not in p.parts)})
+        last = dispatch_dir / f"{label}.last-message.md"
+        last.write_text("ok\nVERDICT: PASS\n")
+        return {"provider": provider, "status": "dispatched", "last_message": str(last)}
+
+    opened = {"status": "opened", "url": "https://github.com/o/r/pull/9"}
+    common = dict(ticket_path=ticket_path, providers=["codex"], reviewer="codex", mode="implement", write_ticket=False,
+                  builder_model="gpt-6-luna", reviewer_model="gpt-6.1-sol")
+    with mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261110T0000{i:02d}Z" for i in range(20)]), \
+            mock.patch.dict(os.environ, {"BOOK_DEV_PLANNER": "claude", "BOOK_DEV_PARALLEL": "2"}), \
+            mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]), \
+            mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), \
+            mock.patch("book_dev_ai_dispatch.run_planner", return_value=(plan, planned)), \
+            mock.patch("book_dev_ai_dispatch.run_child", side_effect=fake_child), \
+            mock.patch("book_dev_ai_dispatch.run_provider", side_effect=fake_review), \
+            mock.patch("book_dev_ai_dispatch.open_pull_request", return_value=opened) as pr:
+        report = dispatch(**common)
+        assert report["status"] == "dispatched", report
+        assert report["flow"]["name"] == "planned-parallel" and [c["id"] for c in report["flow"]["subtasks"]] == ["api", "ui"]
+        assert all("--branch-only" in c and "--no-plan" in c for c in children_seen), "children open no PR and do not re-plan"
+        assert all(c[c.index("--base") + 1] == obase for c in children_seen), "every child builds on the same base"
+        assert [r["label"] for r in reviews] == ["codex-review-0"], "the combined change is reviewed once more"
+        assert {"x.py", "x.tsx"} <= set(reviews[0]["files"]), reviews[0]["files"]
+        assert "Planned by Claude" in pr.call_args.kwargs["body"]
+
+        # A subtask that does not pass blocks the whole job before anything is combined.
+        def failing_child(command, timeout):
+            sid = command[command.index("--stamp") + 1].rsplit("-", 1)[1]
+            return {"status": "review_blocked" if sid == "ui" else "passed",
+                    "flow": {"branch": f"ai/sub-{sid}", "head": child_heads[sid]}}
+        reviews.clear()
+        with mock.patch("book_dev_ai_dispatch.run_child", side_effect=failing_child):
+            report = dispatch(**common)
+        assert report["status"] == "review_blocked" and reviews == [], report
+
+        # One subtask: the normal flow, with the planner's spec in the builder prompt.
+        one = [plan[0]]
+        builds: list[str] = []
+
+        def one_flow(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
+            last = dispatch_dir / f"{label}.last-message.md"
+            if mode == "implement":
+                builds.append(prompt)
+                (cwd / "src" / "api").mkdir(parents=True, exist_ok=True)
+                (cwd / "src" / "api" / "y.py").write_text("y")
+            else:
+                last.write_text("ok\nVERDICT: PASS\n")
+            return {"provider": provider, "status": "dispatched", "last_message": str(last)}
+
+        with mock.patch("book_dev_ai_dispatch.run_planner", return_value=(one, planned)), \
+                mock.patch("book_dev_ai_dispatch.run_provider", side_effect=one_flow):
+            report = dispatch(**common)
+        assert report["status"] == "dispatched" and "Planner's spec" in builds[0] and "add GET /x" in builds[0], report
+
+
 def main() -> int:
     assert parse_providers("grok,codex") == ["grok", "codex"]
     assert parse_providers("codex,codex,grok") == ["codex", "grok"]
@@ -803,6 +963,8 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temp_dir:
         build_review_tests(Path(temp_dir))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        planner_tests(Path(temp_dir))
 
     # Git and gh timeouts come back as results, so the flow still writes its report.
     from book_dev_ai_dispatch import _git

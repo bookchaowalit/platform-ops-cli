@@ -102,6 +102,11 @@ EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 # After MAX_FIX_ROUNDS blocking reviews of a Codex build, Claude (read-only) writes a detailed fix
 # plan and the builder gets one more round on it; set BOOK_DEV_ESCALATE=none to stop at the owner.
 ESCALATE_ENV, ESCALATION_MODEL_ENV, DEFAULT_ESCALATION_MODEL = "BOOK_DEV_ESCALATE", "BOOK_DEV_ESCALATION_MODEL", "opus"
+# Claude plans every Codex job (read-only) and may split it into independent subtasks with disjoint
+# paths; up to BOOK_DEV_PARALLEL child dispatchers then build and review them at the same time.
+PLANNER_ENV, PARALLEL_ENV, DEFAULT_PARALLEL = "BOOK_DEV_PLANNER", "BOOK_DEV_PARALLEL", 3
+MAX_SUBTASKS = 6
+SUBTASK_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 REVIEWER_MODEL_ENV = "BOOK_DEV_REVIEWER_MODEL"
 MAX_FIX_ROUNDS = 2
 # Files an agent CLI may load as instructions. The reviewer runs with project
@@ -304,6 +309,7 @@ Hard stop rules (non-negotiable):
 
 Ticket status: {ticket.get('status')}
 Task: {task_label} {_clean(task.get('title'), 200)}
+Task details and acceptance: {_clean(task.get('description'), 6000) or '(none)'}
 Repository: {repo_line}
 Source: {selected.get('source') or 'open_task'}
 Recommendation: {_clean(selected.get('recommendation'), 300)}
@@ -943,6 +949,139 @@ def open_pull_request(
     return {"status": "opened", "url": created.stdout.strip().splitlines()[-1] if created.stdout.strip() else None}
 
 
+def _in_scope(path: str, scope: list[str]) -> bool:
+    return any(path == s.rstrip("/") or path.startswith(s.rstrip("/") + "/") for s in scope)
+
+
+def validate_plan(plan: Any) -> list[dict[str, Any]] | None:
+    """Subtasks from the planner's JSON, or None when it is unusable (then the job runs whole).
+
+    Each subtask needs an id, a spec and repository-relative paths; no path may lie inside
+    another subtask's paths, so the branches can be combined without overlap."""
+    items = plan.get("subtasks") if isinstance(plan, dict) else None
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_SUBTASKS:
+        return None
+    subtasks, seen = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        sid, spec, paths = str(item.get("id") or ""), str(item.get("spec") or "").strip(), item.get("paths")
+        if not SUBTASK_ID_RE.fullmatch(sid) or sid in seen or not spec or not isinstance(paths, list) or not paths:
+            return None
+        clean = []
+        for raw in paths:
+            path = str(raw).strip()
+            parts = path.rstrip("/").split("/")
+            if (not path or path.startswith("/") or ".." in parts or "." in parts or any(c in path for c in "*?[]\\\n")
+                    or AGENT_INSTRUCTION_RE.search(path)):
+                return None
+            clean.append(path)
+        seen.add(sid)
+        subtasks.append({"id": sid, "title": _clean(item.get("title"), 160) or sid, "spec": spec[:6000],
+                         "acceptance": str(item.get("acceptance") or "").strip()[:3000], "paths": clean})
+    for i, a in enumerate(subtasks):
+        for b in subtasks[i + 1:]:
+            if any(_in_scope(x, b["paths"]) or _in_scope(y, a["paths"]) for x in a["paths"] for y in b["paths"]):
+                return None
+    return subtasks
+
+
+def parse_plan(text: str) -> list[dict[str, Any]] | None:
+    blocks = re.findall(r"```json\s*(\{.*?\})\s*```", text or "", re.DOTALL)
+    if not blocks:
+        return None
+    try:
+        return validate_plan(json.loads(blocks[-1]))
+    except json.JSONDecodeError:
+        return None
+
+
+def build_split_prompt(ticket: dict[str, Any], *, base: str, parallel: int) -> str:
+    task = ((ticket.get("selected") or {}).get("task") or {})
+    return f"""You are the planner for a cheaper builder model. Do not edit files or run anything that
+changes state. The checkout you run in is the base commit {base}; read whatever you need.
+
+Task: {_clean(task.get('title'), 200)}
+Description and acceptance: {_clean(task.get('description'), 3000)}
+
+Plan the work so the builder can follow it without guessing. Split it into independent subtasks only
+when the parts touch disjoint files and can be built and tested separately (at most {parallel} at a
+time is efficient, {MAX_SUBTASKS} in total); otherwise return one subtask. For each subtask give:
+- id (lowercase letters, digits, hyphens), title;
+- spec: exact files and functions to change and how, and the checks to run;
+- acceptance: what passing looks like;
+- paths: the repository-relative files or directories it may change (no wildcards; no path may lie
+  inside another subtask's paths; include its tests).
+
+End your reply with one fenced block:
+```json
+{{"subtasks": [{{"id": "a", "title": "...", "spec": "...", "acceptance": "...", "paths": ["src/x/", "tests/test_x.py"]}}]}}
+```
+"""
+
+
+def subtask_ticket(ticket: dict[str, Any], subtask: dict[str, Any]) -> dict[str, Any]:
+    """The parent ticket narrowed to one subtask: its spec and acceptance, and the paths it may change."""
+    child = json.loads(json.dumps(ticket))
+    selected = child.setdefault("selected", {})
+    task = selected.setdefault("task", {})
+    task["title"] = f"[{subtask['id']}] {subtask['title']}"
+    task["description"] = (
+        f"{subtask['spec']}\n\nAcceptance: {subtask['acceptance']}\n\n"
+        f"Change only these paths: {', '.join(subtask['paths'])}"
+    )
+    selected["scope_paths"] = subtask["paths"]
+    return child
+
+
+def _git_env(cwd: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False,
+                              timeout=120, env={**os.environ, **env})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["git", *args], 124, "", "timed out")
+
+
+def integrate(repo_dir: Path, *, base: str, heads: dict[str, str], branch: str, message: str) -> str | None:
+    """One commit whose tree is base plus every subtask's changes, parents base + each subtask head.
+
+    Plumbing only (read-tree, update-index --cacheinfo, write-tree, commit-tree): no merge driver,
+    filter or hook runs. A path changed by two subtasks, or a head not built on base, refuses."""
+    with tempfile.TemporaryDirectory(prefix="book-dev-integrate-") as private:
+        env = {"GIT_INDEX_FILE": str(Path(private) / "index")}
+        if _git_env(repo_dir, env, *SAFE_GIT, "read-tree", base).returncode != 0:
+            return None
+        owners: dict[str, str] = {}
+        for sid, head in heads.items():
+            if _git(repo_dir, "merge-base", "--is-ancestor", base, head).returncode != 0:
+                return None
+            raw = _git(repo_dir, "diff-tree", "-r", "-z", "--no-renames", base, head)
+            if raw.returncode != 0:
+                return None
+            fields = raw.stdout.split("\0")
+            if fields and not fields[-1]:
+                fields.pop()
+            for meta, path in zip(fields[0::2], fields[1::2]):
+                if owners.setdefault(path, sid) != sid:
+                    return None
+                _, new_mode, _, new_sha, status = meta.lstrip(":").split()[:5]
+                if status.startswith("D"):
+                    done = _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--force-remove", "--", path)
+                else:
+                    done = _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--add", "--cacheinfo", f"{new_mode},{new_sha},{path}")
+                if done.returncode != 0:
+                    return None
+        tree = _git_env(repo_dir, env, *SAFE_GIT, "write-tree").stdout.strip()
+        if not tree:
+            return None
+        parents = [arg for head in [base, *heads.values()] for arg in ("-p", head)]
+        commit = _git(repo_dir, *SAFE_GIT, "commit-tree", tree, *parents, "-m", message).stdout.strip()
+        # update-ref would run a reference-transaction hook: hooks are off here too.
+        if not commit or _git(repo_dir, *SAFE_GIT, "update-ref", f"refs/heads/{branch}", commit, "").returncode != 0:
+            return None
+        return commit
+
+
 def build_review(
     *,
     ticket: dict[str, Any],
@@ -960,8 +1099,17 @@ def build_review(
     reviewer_effort: str | None = None,
     escalate_to: str | None = None,
     escalation_model: str | None = None,
+    plan_note: str | None = None,
+    open_pr: bool = True,
+    start_head: str | None = None,
+    base_override: str | None = None,
+    pr_note: str = "",
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
-    """Builder commits in a worktree, reviewer gates it, a passing branch becomes a PR."""
+    """Builder commits in a worktree, reviewer gates it, a passing branch becomes a PR.
+
+    plan_note adds the planner's spec to the builder prompt; open_pr=False keeps a passing branch
+    (status "passed") for a parent to combine; start_head starts at review on an existing commit
+    (the combined subtasks), whose branch the caller already created."""
 
     builder_commits = builder not in DISPATCHER_COMMITS
 
@@ -990,6 +1138,11 @@ def build_review(
         "pull_request": None,
     }
     prompt = build_prompt(ticket, mode="implement", branch=branch, worktree=worktree, builder_commits=builder_commits)
+    scope = list(((ticket.get("selected") or {}).get("scope_paths")) or [])
+    if scope:
+        prompt += "\nScope: change only files under " + ", ".join(f"`{p}`" for p in scope) + "; anything else stops the run.\n"
+    if plan_note:
+        prompt += f"\nPlanner's spec (follow it):\n{plan_note}\n"
     prompt_file = write_prompt_file(prompt, dispatch_dir)
     task = ((ticket.get("selected") or {}).get("task") or {})
     title = _clean(task.get("title"), 120) or branch
@@ -1023,13 +1176,18 @@ def build_review(
     base = _git(repo_dir, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base_branch}").stdout.strip()
     if not base:
         return "failed", results, {**flow, "error": f"origin/{base_branch} not found"}
+    if base_override:
+        base = base_override
     flow["base"] = base
     nofilter = filter_overrides(repo_dir)
     if nofilter is None:
         return "failed", results, {**flow, "error": "could not neutralise the repository's git filters"}
     safe = (*SAFE_GIT, *nofilter)
     worktree.parent.mkdir(parents=True, exist_ok=True)
-    added = _git(repo_dir, *safe, "worktree", "add", "-b", branch, str(worktree), base)
+    added = (
+        _git(repo_dir, *safe, "worktree", "add", str(worktree), branch)
+        if start_head else _git(repo_dir, *safe, "worktree", "add", "-b", branch, str(worktree), base)
+    )
     if added.returncode != 0:
         return "failed", results, {**flow, "error": _clean(added.stderr, 400)}
     # The `.git` file lives in the builder's tree: a swapped one would point every later
@@ -1091,7 +1249,7 @@ def build_review(
         _git(repo_dir, "branch", "-D", branch)
         return True
 
-    result = build(0, None)
+    result = build(0, None) if not start_head else {"status": "dispatched"}
     if result["status"] != "dispatched":
         flow["worktree_kept"] = not untouched()
         return result["status"], results, flow
@@ -1117,7 +1275,7 @@ def build_review(
 
     def plan_fix(head: str) -> str | None:
         """Claude reads the exact commit and every review report, read-only, and returns a fix plan."""
-        texts = [_read(Path(r["report"])) for r in flow["reviews"]]
+        texts = list(review_texts)  # kept in memory, never re-read from a directory the builder could reach
         diff = _git(repo_dir, *safe, "diff", "--no-ext-diff", "--no-textconv", f"{base}..{head}").stdout
         plan_prompt = build_escalation_prompt(ticket, base=base, head=head, branch=branch, reviews=texts, diff=diff)
         label = "claude-plan"
@@ -1142,6 +1300,7 @@ def build_review(
         return text.strip() if planned["status"] == "dispatched" and text.strip() else None
 
     head = ""
+    review_texts: list[str] = []
     escalated = False
     round_no = -1
     while True:
@@ -1158,8 +1317,14 @@ def build_review(
             # An amend or rebase past the base would make the reviewed base..head diff differ from the PR.
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"branch no longer descends from {base[:12]}"}
-        changed = [path for path in wt("diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
+        # --no-renames lists a rename's source path too, so moving a file out of scope is caught.
+        changed = [path for path in wt("diff", "--name-only", "--no-renames", "-z", f"{base}..{head}").stdout.split("\0") if path]
         flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
+        flow["out_of_scope"] = [path for path in changed if scope and not _in_scope(path, scope)]
+        if flow["out_of_scope"]:
+            # A subtask changed files the planner gave to another subtask (or to none).
+            flow["worktree_kept"] = True
+            return "review_blocked", results, {**flow, "error": "subtask changed files outside its paths"}
         flow["secret_findings"] = secret_findings(repo_dir, base, head)
         if flow["secret_findings"]:
             # Nothing that looks like a credential goes to the reviewer, the remote or a PR.
@@ -1197,6 +1362,7 @@ def build_review(
         if review["status"] != "dispatched":
             flow["worktree_kept"] = True
             return review["status"], results, flow
+        review_texts.append(text)
         verdict = parse_verdict(text)
         flow["reviews"].append({"round": round_no, "head": head, "verdict": verdict, "report": review["last_message"]})
         if verdict == "pass":
@@ -1220,13 +1386,19 @@ def build_review(
         flow["worktree_kept"] = True
         return "failed", results, {**flow, "error": "branch moved after the passing review"}
 
+    if not open_pr:
+        # A subtask branch: the parent combines passing branches and opens one PR.
+        flow["head"] = head
+        _git(repo_dir, *safe, "worktree", "remove", str(worktree))
+        return "passed", results, flow
+
     def who(provider: str, model: str | None) -> str:
         return f"`{provider}`" + (f" (`{model}`)" if model else "")
 
     body = (
         f"Built by {who(builder, builder_model)} and reviewed read-only by {who(reviewer, reviewer_model)} "
         f"({len(flow['reviews'])} review round(s), final verdict PASS on {head}).\n\n"
-        f"Ticket: {task.get('id')}\n\n"
+        f"Ticket: {task.get('id')}\n\n{pr_note}"
         "Merge and deploy need owner approval after CI passes.\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
     )
@@ -1237,6 +1409,132 @@ def build_review(
         return "failed", results, flow
     _git(repo_dir, *safe, "worktree", "remove", str(worktree))
     return "dispatched", results, flow
+
+
+def _origin_base(repo_dir: Path) -> tuple[str, str] | None:
+    base_branch = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
+    if _git(repo_dir, "fetch", "-q", "origin", base_branch).returncode != 0:
+        return None
+    base = _git(repo_dir, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{base_branch}").stdout.strip()
+    return (base_branch, base) if base else None
+
+
+def run_planner(ticket: dict[str, Any], *, repo_dir: Path, base: str, dispatch_dir: Path, model: str,
+                parallel: int, max_turns: int, timeout_sec: int) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    """Claude, read-only on a checkout of the base, returns the subtasks (None: run the job whole)."""
+    nofilter = filter_overrides(repo_dir)
+    if nofilter is None:
+        return None, {"provider": "claude", "status": "failed", "error": "could not neutralise git filters"}
+    safe = (*SAFE_GIT, *nofilter)
+    label = "claude-split"
+    prompt = build_split_prompt(ticket, base=base, parallel=parallel)
+    with tempfile.TemporaryDirectory(prefix="book-dev-split-") as private:
+        tree = Path(private) / "checkout"
+        if _git(repo_dir, *safe, "worktree", "add", "--detach", str(tree), base).returncode != 0:
+            return None, {"provider": "claude", "status": "failed", "error": "could not create planner checkout"}
+        try:
+            result = run_provider(
+                "claude", prompt=prompt, prompt_file=write_prompt_file(prompt, Path(private), "prompt.md"),
+                mode="plan", dry_run=False, cwd=tree, label=label, model=model, max_turns=max_turns,
+                timeout_sec=timeout_sec, dispatch_dir=Path(private), guard="branch",
+            )
+            text = _read(Path(private) / f"{label}.last-message.md")
+        finally:
+            _git(repo_dir, *safe, "worktree", "remove", "--force", str(tree))
+    (dispatch_dir / f"{label}.last-message.md").write_text(text, encoding="utf-8")
+    result["last_message"] = _path_label(dispatch_dir / f"{label}.last-message.md")
+    return (parse_plan(text) if result["status"] == "dispatched" else None), result
+
+
+def run_child(command: list[str], timeout: int) -> dict[str, Any]:
+    """One subtask's dispatcher in its own process (own subreaper, worktree and containment).
+
+    On timeout the child gets SIGTERM first: its handler kills everything below it (builders run in
+    their own sessions, so a group kill would miss them), then SIGKILL if it does not exit."""
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc.pid)
+            proc.communicate()
+        return {"status": "timeout", "error": f"subtask timed out after {timeout}s"}
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return {"status": "failed", "error": _clean(stderr or stdout, 300)}
+
+
+def planned_build(*, ticket: dict[str, Any], ticket_path: Path, dispatch_dir: Path, stamp: str, builder: str,
+                  reviewer: str, repo_dir: Path, max_turns: int, timeout_sec: int, planner_model: str,
+                  open_pr: bool, **options: Any) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Claude plans; one subtask runs the normal flow with the plan, several run in parallel children
+    and their passing branches are combined, reviewed as a whole and opened as one PR."""
+    parallel = max(1, int(os.environ.get(PARALLEL_ENV) or DEFAULT_PARALLEL))
+    common = dict(builder=builder, reviewer=reviewer, repo_dir=repo_dir, max_turns=max_turns, timeout_sec=timeout_sec,
+                  **options)
+    origin = _origin_base(repo_dir)
+    if not origin:
+        return build_review(ticket=ticket, dispatch_dir=dispatch_dir, stamp=stamp, dry_run=False, open_pr=open_pr, **common)
+    base_branch, base = origin
+    subtasks, planned = run_planner(ticket, repo_dir=repo_dir, base=base, dispatch_dir=dispatch_dir,
+                                    model=planner_model, parallel=parallel, max_turns=max_turns, timeout_sec=timeout_sec)
+    planner = {"model": planner_model, "status": planned["status"], "report": planned.get("last_message"),
+               "subtasks": [{k: t[k] for k in ("id", "title", "paths")} for t in subtasks or []]}
+    if not subtasks or len(subtasks) == 1:
+        # One piece (or no usable plan): the normal flow, with the planner's spec when there is one.
+        note = None if not subtasks else f"{subtasks[0]['spec']}\n\nAcceptance: {subtasks[0]['acceptance']}"
+        status, results, flow = build_review(ticket=ticket, dispatch_dir=dispatch_dir, stamp=stamp, dry_run=False,
+                                             open_pr=open_pr, plan_note=note, **common)
+        return status, [planned, *results], {**flow, "planner": planner}
+
+    # Several independent pieces: one child dispatcher per subtask, up to `parallel` at a time.
+    from concurrent.futures import ThreadPoolExecutor
+
+    script = str(Path(__file__).resolve())
+    passthrough = ["--providers", builder, "--reviewer", reviewer, "--max-turns", str(max_turns),
+                   "--timeout-sec", str(timeout_sec), "--json", "--no-write-ticket", "--branch-only", "--no-plan"]
+    for flag, key in (("--builder-model", "builder_model"), ("--reviewer-model", "reviewer_model")):
+        if options.get(key):
+            passthrough += [flag, options[key]]
+    jobs = []
+    for task in subtasks:
+        child_ticket = dispatch_dir / f"subtask-{task['id']}.json"
+        child_ticket.write_text(json.dumps(subtask_ticket(ticket, task), ensure_ascii=False), encoding="utf-8")
+        jobs.append((task, [sys.executable, script, "--ticket", str(child_ticket), "--stamp", f"{stamp}-{task['id']}",
+                            "--base", base, *passthrough]))
+    child_timeout = timeout_sec * (MAX_FIX_ROUNDS + 3) * 2 + 600
+    with ThreadPoolExecutor(max_workers=min(parallel, len(jobs))) as pool:
+        reports = list(pool.map(lambda job: run_child(job[1], child_timeout), jobs))
+    children = [{"id": task["id"], "status": report.get("status"), "branch": (report.get("flow") or {}).get("branch"),
+                 "head": (report.get("flow") or {}).get("head"), "error": report.get("error") or (report.get("flow") or {}).get("error"),
+                 "report": (report.get("outputs") or {}).get("report")} for (task, _), report in zip(jobs, reports)]
+    flow: dict[str, Any] = {"name": "planned-parallel", "builder": builder, "reviewer": reviewer, "base": base,
+                            "base_branch": base_branch, "planner": planner, "subtasks": children,
+                            "reviews": [], "pull_request": None}
+    if any(child["status"] != "passed" or not child["head"] for child in children):
+        # Every subtask must pass on its own; the branches are kept for the owner.
+        return "review_blocked", [planned], {**flow, "error": "a subtask did not pass its review"}
+
+    branch = _branch_name(ticket, stamp)
+    title = _clean(((ticket.get("selected") or {}).get("task") or {}).get("title"), 120) or branch
+    combined = integrate(repo_dir, base=base, heads={c["id"]: c["head"] for c in children}, branch=branch,
+                         message=f"{title}\n\nCombined subtasks: " + ", ".join(c["id"] for c in children))
+    if not combined:
+        return "failed", [planned], {**flow, "error": "could not combine the subtask branches"}
+    # The whole change is reviewed again (fix rounds and escalation apply) before one PR opens.
+    note = "\n\n".join(f"[{t['id']}] {t['spec']}" for t in subtasks)
+    status, results, final = build_review(
+        ticket=ticket, dispatch_dir=dispatch_dir, stamp=stamp, dry_run=False, open_pr=open_pr, plan_note=note,
+        start_head=combined, base_override=base,
+        pr_note="Planned by Claude; subtasks built in parallel: " + ", ".join(f"`{c['id']}`" for c in children) + "\n\n",
+        **common,
+    )
+    return status, [planned, *results], {**final, "name": "planned-parallel", "planner": planner, "subtasks": children}
 
 
 def update_ticket_dispatch(
@@ -1283,6 +1581,10 @@ def dispatch(
     reviewer_model: str | None = None,
     builder_effort: str | None = None,
     reviewer_effort: str | None = None,
+    stamp: str | None = None,
+    open_pr: bool = True,
+    plan: bool = True,
+    base_override: str | None = None,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}")
@@ -1320,19 +1622,31 @@ def dispatch(
         raise ValueError("execution ticket has no selected candidate to dispatch")
     repo_dir = resolve_repo_dir(ticket)
 
-    stamp = _now_stamp()
+    stamp = stamp or _now_stamp()
     dispatch_dir = ticket_path.parent / "dispatch" / stamp
     if reviewer:
         dispatch_dir.mkdir(parents=True, exist_ok=True)
-        overall, results, flow = build_review(
-            ticket=ticket, builder=selected_providers[0], reviewer=reviewer, repo_dir=repo_dir,
-            dispatch_dir=dispatch_dir, stamp=stamp, max_turns=max_turns,
-            timeout_sec=timeout_sec, dry_run=dry_run,
-            builder_model=builder_model, reviewer_model=reviewer_model,
+        escalation_model = os.environ.get(ESCALATION_MODEL_ENV) or DEFAULT_ESCALATION_MODEL
+        options = dict(
+            builder=selected_providers[0], reviewer=reviewer, repo_dir=repo_dir, max_turns=max_turns,
+            timeout_sec=timeout_sec, builder_model=builder_model, reviewer_model=reviewer_model,
             builder_effort=builder_effort, reviewer_effort=reviewer_effort,
-            escalate_to=None if escalate_to == "none" else escalate_to,
-            escalation_model=os.environ.get(ESCALATION_MODEL_ENV) or DEFAULT_ESCALATION_MODEL,
+            escalate_to=None if escalate_to == "none" else escalate_to, escalation_model=escalation_model,
         )
+        planner = (os.environ.get(PLANNER_ENV) or "claude").strip().lower()
+        if planner not in {"claude", "none"}:
+            raise ValueError(f"{PLANNER_ENV} must be claude or none")
+        plan_jobs = planner == "claude" and plan and selected_providers[0] in DISPATCHER_COMMITS and not dry_run
+        if plan_jobs:
+            overall, results, flow = planned_build(
+                ticket=ticket, ticket_path=ticket_path, dispatch_dir=dispatch_dir, stamp=stamp,
+                planner_model=escalation_model, open_pr=open_pr, **options,
+            )
+        else:
+            overall, results, flow = build_review(
+                ticket=ticket, dispatch_dir=dispatch_dir, stamp=stamp, dry_run=dry_run, open_pr=open_pr,
+                base_override=base_override, **options,
+            )
         return _finish_report(
             ticket_path, ticket, dispatch_dir, mode=mode, providers=selected_providers,
             overall=overall, results=results, max_turns=max_turns, timeout_sec=timeout_sec,
@@ -1459,6 +1773,10 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get(REVIEWER_MODEL_ENV),
         help="Reviewer model in the build-review flow, e.g. gpt-6.1-sol",
     )
+    parser.add_argument("--stamp", help=argparse.SUPPRESS)
+    parser.add_argument("--base", help=argparse.SUPPRESS)  # subtask child: the parent's base commit
+    parser.add_argument("--branch-only", action="store_true", help=argparse.SUPPRESS)  # subtask child: no PR
+    parser.add_argument("--no-plan", action="store_true", help="skip the Claude planner for this run")
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--timeout-sec", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true")
@@ -1471,7 +1789,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _terminate(signum: int, _frame: Any) -> None:
+    """SIGTERM from a parent dispatcher: kill everything this process started, then exit."""
+    try:
+        _kill_descendants()
+    except ContainmentError:
+        pass
+    os._exit(128 + signum)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _terminate)
     args = parse_args()
     try:
         report = dispatch(
@@ -1485,6 +1813,10 @@ def main() -> int:
             reviewer=args.reviewer,
             builder_model=args.builder_model,
             reviewer_model=args.reviewer_model,
+            stamp=args.stamp,
+            base_override=args.base,
+            open_pr=not args.branch_only,
+            plan=not args.no_plan,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         payload = {"contract": CONTRACT, "status": "error", "error": str(exc)}
