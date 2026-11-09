@@ -369,8 +369,9 @@ def build_review_tests(tmp: Path) -> None:
     assert claude_env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "OPENAI_API_KEY" not in claude_env
 
     # Builder commands: model flags and the Codex network-off sandbox.
-    claude_cmd = build_provider_command("claude", prompt_file=tmp / "p", mode="implement", max_turns=3, cwd=tmp,
-                                        last_message_path=tmp / "l", guard="branch", model="opus")
+    with mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]):
+        claude_cmd = build_provider_command("claude", prompt_file=tmp / "p", mode="implement", max_turns=3, cwd=tmp,
+                                            last_message_path=tmp / "l", guard="branch", model="opus")
     assert claude_cmd[claude_cmd.index("--model") + 1] == "opus"
     assert provider_env("codex", "release") is None, "release flow keeps the env"
     with mock.patch.dict(os.environ, {"GH_TOKEN": "x", "PATH": "/bin"}):
