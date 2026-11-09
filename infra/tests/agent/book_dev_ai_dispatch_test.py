@@ -550,6 +550,13 @@ def build_review_tests(tmp: Path) -> None:
     args = filter_overrides(scan)
     assert args is not None
     assert "filter.lfs.process=" in args and "filter.lfs.clean=cat" in args and "filter.my.tool.clean=cat" in args, args
+    # A filter behind a conditional include (onbranch:ai/**) is neutralised too, whatever the branch.
+    extra = scan / "branch-only.gitconfig"
+    extra.write_text('[filter "sneaky"]\n\tclean = ./scripts/evil.sh\n')
+    subprocess.run(["git", "-C", str(scan), "config", "includeIf.onbranch:ai/**.path", str(extra)], check=True)
+    cond = filter_overrides(scan)
+    assert cond is not None and "filter.sneaky.clean=cat" in cond, cond
+    subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "includeIf.onbranch:ai/**"], check=True)
     subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "filter.lfs"], check=True)
     subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "filter.my.tool"], check=True)
     # Long uppercase lines do not make the dotenv pattern backtrack for long.
@@ -795,6 +802,8 @@ def planner_tests(tmp: Path) -> None:
         assert report["flow"]["name"] == "planned-parallel" and [c["id"] for c in report["flow"]["subtasks"]] == ["api", "ui"]
         assert all("--branch-only" in c and "--no-plan" in c for c in children_seen), "children open no PR and do not re-plan"
         assert all(c[c.index("--base") + 1] == obase for c in children_seen), "every child builds on the same base"
+        assert all(c[c.index("--builder-effort") + 1] == "xhigh" and c[c.index("--reviewer-effort") + 1] == "high"
+                   for c in children_seen), "resolved efforts reach every child"
         assert [r["label"] for r in reviews] == ["codex-review-0"], "the combined change is reviewed once more"
         assert {"x.py", "x.tsx"} <= set(reviews[0]["files"]), reviews[0]["files"]
         assert "Planned by Claude" in pr.call_args.kwargs["body"]

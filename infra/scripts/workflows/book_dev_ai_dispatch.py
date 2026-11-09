@@ -788,6 +788,54 @@ SAFE_GIT = (
     "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
     "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "gc.auto=0",
 )
+def _filter_names_in(config_file: Path, base_dir: Path, depth: int = 0) -> set[str] | None:
+    """Filter driver names a config file (and the files it includes) defines, whatever the include's condition."""
+    if depth > 5:
+        return None
+    if not config_file.is_file():
+        return set()
+    names: set[str] = set()
+    listed = _git(base_dir, "config", "-f", str(config_file), "--name-only", "--get-regexp", r"^filter\.")
+    if listed.returncode not in (0, 1):
+        return None
+    for key in listed.stdout.split():
+        names.add(key[len("filter."):key.rfind(".")])
+    nested = _git(base_dir, "config", "-f", str(config_file), "--get-regexp", r"^include(if\..*)?\.path$")
+    if nested.returncode not in (0, 1):
+        return None
+    for line in nested.stdout.splitlines():
+        _, _, value = line.partition(" ")
+        target = Path(os.path.expanduser(value.strip()))
+        inner = _filter_names_in(target if target.is_absolute() else config_file.parent / target, base_dir, depth + 1)
+        if inner is None:
+            return None
+        names |= inner
+    return names
+
+
+def _conditional_filter_names(repo_dir: Path) -> set[str] | None:
+    """Filters behind includeIf (onbranch:, gitdir: ...) that the current checkout does not activate.
+
+    The new branch or the worktree's gitdir may match a condition the main checkout does not, so
+    every conditionally included file is read regardless of its condition."""
+    found = _git(repo_dir, "config", "--show-origin", "--get-regexp", r"^includeif\..*\.path$")
+    if found.returncode not in (0, 1):
+        return None
+    names: set[str] = set()
+    for line in found.stdout.splitlines():
+        origin, _, rest = line.partition("\t")
+        _, _, value = rest.partition(" ")
+        origin_path = Path(origin.removeprefix("file:"))
+        if not origin_path.is_absolute():
+            origin_path = repo_dir / origin_path
+        target = Path(os.path.expanduser(value.strip()))
+        inner = _filter_names_in(target if target.is_absolute() else origin_path.parent / target, repo_dir)
+        if inner is None:
+            return None
+        names |= inner
+    return names
+
+
 def filter_overrides(repo_dir: Path) -> tuple[str, ...] | None:
     """`-c` args that turn every configured filter driver into a no-op (`cat`, no process).
 
@@ -802,6 +850,13 @@ def filter_overrides(repo_dir: Path) -> tuple[str, ...] | None:
     names = set()
     for key in listed.stdout.split():
         name = key[len("filter."):key.rfind(".")]
+        if not name or "=" in name or "\n" in name:
+            return None
+        names.add(name)
+    conditional = _conditional_filter_names(repo_dir)
+    if conditional is None:
+        return None
+    for name in conditional:
         if not name or "=" in name or "\n" in name:
             return None
         names.add(name)
@@ -1509,7 +1564,8 @@ def planned_build(*, ticket: dict[str, Any], ticket_path: Path, dispatch_dir: Pa
     script = str(Path(__file__).resolve())
     passthrough = ["--providers", builder, "--reviewer", reviewer, "--max-turns", str(max_turns),
                    "--timeout-sec", str(timeout_sec), "--json", "--no-write-ticket", "--branch-only", "--no-plan"]
-    for flag, key in (("--builder-model", "builder_model"), ("--reviewer-model", "reviewer_model")):
+    for flag, key in (("--builder-model", "builder_model"), ("--reviewer-model", "reviewer_model"),
+                      ("--builder-effort", "builder_effort"), ("--reviewer-effort", "reviewer_effort")):
         if options.get(key):
             passthrough += [flag, options[key]]
     jobs = []
@@ -1790,6 +1846,8 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get(REVIEWER_MODEL_ENV),
         help="Reviewer model in the build-review flow, e.g. gpt-6.1-sol",
     )
+    parser.add_argument("--builder-effort", default=os.environ.get(BUILDER_EFFORT_ENV), help="Codex builder effort")
+    parser.add_argument("--reviewer-effort", default=os.environ.get(REVIEWER_EFFORT_ENV), help="Codex reviewer effort")
     parser.add_argument("--stamp", help=argparse.SUPPRESS)
     parser.add_argument("--base", help=argparse.SUPPRESS)  # subtask child: the parent's base commit
     parser.add_argument("--branch-only", action="store_true", help=argparse.SUPPRESS)  # subtask child: no PR
@@ -1830,6 +1888,8 @@ def main() -> int:
             reviewer=args.reviewer,
             builder_model=args.builder_model,
             reviewer_model=args.reviewer_model,
+            builder_effort=args.builder_effort,
+            reviewer_effort=args.reviewer_effort,
             stamp=args.stamp,
             base_override=args.base,
             open_pr=not args.branch_only,
