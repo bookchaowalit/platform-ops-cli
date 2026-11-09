@@ -716,6 +716,21 @@ def planner_tests(tmp: Path) -> None:
     assert set(run("show", "-s", "--format=%P", combined).split()) == {base, *heads.values()}
     files = set(run("ls-tree", "-r", "--name-only", combined).split())
     assert files == {"keep.txt", "src/a.py", "web/b.tsx"}, files
+    # A directory replaced by a file (removals before additions) combines too.
+    run("checkout", "-q", "-b", "sub-d", base)
+    (repo / "dirx").mkdir()
+    (repo / "dirx" / "inner.txt").write_text("i\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "dir")
+    with_dir = run("rev-parse", "HEAD")
+    run("rm", "-rq", "dirx")
+    (repo / "dirx").write_text("now a file\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "file")
+    as_file = run("rev-parse", "HEAD")
+    run("checkout", "-q", "main")
+    swapped = integrate(repo, base=with_dir, heads={"d": as_file}, branch="ai/swap", message="m")
+    assert swapped and "dirx" in run("ls-tree", "--name-only", swapped).split()
     # Two subtasks changing the same path, or a head not on base, refuse.
     run("checkout", "-q", "-b", "sub-c", base)
     (repo / "src").mkdir(exist_ok=True)
@@ -793,6 +808,9 @@ def planner_tests(tmp: Path) -> None:
         with mock.patch("book_dev_ai_dispatch.run_child", side_effect=failing_child):
             report = dispatch(**common)
         assert report["status"] == "review_blocked" and reviews == [], report
+        # A child that could not run keeps its own status (the cycle retries "unavailable").
+        with mock.patch("book_dev_ai_dispatch.run_child", side_effect=lambda c, t: {"status": "unavailable"}):
+            assert dispatch(**common)["status"] == "unavailable"
 
         # One subtask: the normal flow, with the planner's spec in the builder prompt.
         one = [plan[0]]

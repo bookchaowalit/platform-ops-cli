@@ -1052,6 +1052,8 @@ def integrate(repo_dir: Path, *, base: str, heads: dict[str, str], branch: str, 
         if _git_env(repo_dir, env, *SAFE_GIT, "read-tree", base).returncode != 0:
             return None
         owners: dict[str, str] = {}
+        removals: list[str] = []
+        additions: list[str] = []
         for sid, head in heads.items():
             if _git(repo_dir, "merge-base", "--is-ancestor", base, head).returncode != 0:
                 return None
@@ -1066,11 +1068,17 @@ def integrate(repo_dir: Path, *, base: str, heads: dict[str, str], branch: str, 
                     return None
                 _, new_mode, _, new_sha, status = meta.lstrip(":").split()[:5]
                 if status.startswith("D"):
-                    done = _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--force-remove", "--", path)
+                    removals.append(path)
                 else:
-                    done = _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--add", "--cacheinfo", f"{new_mode},{new_sha},{path}")
-                if done.returncode != 0:
-                    return None
+                    additions.append(f"{new_mode},{new_sha},{path}")
+        # Removals first, then additions with --replace, so a directory replaced by a file (or the
+        # other way round) lands regardless of the order diff-tree listed them in.
+        for path in removals:
+            if _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--force-remove", "--", path).returncode != 0:
+                return None
+        for entry in additions:
+            if _git_env(repo_dir, env, *SAFE_GIT, "update-index", "--add", "--replace", "--cacheinfo", entry).returncode != 0:
+                return None
         tree = _git_env(repo_dir, env, *SAFE_GIT, "write-tree").stdout.strip()
         if not tree:
             return None
@@ -1439,9 +1447,12 @@ def run_planner(ticket: dict[str, Any], *, repo_dir: Path, base: str, dispatch_d
                 timeout_sec=timeout_sec, dispatch_dir=Path(private), guard="branch",
             )
             text = _read(Path(private) / f"{label}.last-message.md")
+            log = _read(Path(private) / f"{label}.log")
         finally:
             _git(repo_dir, *safe, "worktree", "remove", "--force", str(tree))
     (dispatch_dir / f"{label}.last-message.md").write_text(text, encoding="utf-8")
+    (dispatch_dir / f"{label}.log").write_text(log, encoding="utf-8")
+    result["log"] = _path_label(dispatch_dir / f"{label}.log")
     result["last_message"] = _path_label(dispatch_dir / f"{label}.last-message.md")
     return (parse_plan(text) if result["status"] == "dispatched" else None), result
 
@@ -1517,8 +1528,14 @@ def planned_build(*, ticket: dict[str, Any], ticket_path: Path, dispatch_dir: Pa
                             "base_branch": base_branch, "planner": planner, "subtasks": children,
                             "reviews": [], "pull_request": None}
     if any(child["status"] != "passed" or not child["head"] for child in children):
-        # Every subtask must pass on its own; the branches are kept for the owner.
-        return "review_blocked", [planned], {**flow, "error": "a subtask did not pass its review"}
+        # Every subtask must pass on its own; the branches are kept for the owner. The worst child
+        # status wins, so a missing CLI stays "unavailable" (the Linear cycle retries it) and a crash
+        # stays "failed" instead of reading as a review verdict.
+        order = ("unavailable", "failed", "timeout", "uncommitted_changes", "review_blocked")
+        statuses = [str(child["status"]) for child in children if child["status"] != "passed"] or ["failed"]
+        worst = min(statuses, key=lambda st: order.index(st) if st in order else len(order))
+        return worst, [planned], {**flow, "error": "a subtask did not pass: " + ", ".join(
+            f"{c['id']}={c['status']}" for c in children if c["status"] != "passed")}
 
     branch = _branch_name(ticket, stamp)
     title = _clean(((ticket.get("selected") or {}).get("task") or {}).get("title"), 120) or branch
