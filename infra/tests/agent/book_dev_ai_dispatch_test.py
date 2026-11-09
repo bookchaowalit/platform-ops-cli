@@ -275,6 +275,74 @@ def build_review_tests(tmp: Path) -> None:
             assert report["status"] == expected, report
             assert report["flow"]["worktree_kept"] is True and seen[0].exists()
 
+    # Codex (Luna) builder: sandboxed, no network, edits only; the dispatcher commits each round.
+    codex = dict(common, providers=["codex"], reviewer="codex")
+    for bad in (dict(), dict(builder_model="gpt-6-luna"), dict(builder_model="m", reviewer_model="m")):
+        try:
+            dispatch(**{**codex, **bad})
+            raise AssertionError(f"expected rejection: {bad}")
+        except ValueError:
+            pass
+    models = dict(builder_model="gpt-6-luna", reviewer_model="gpt-6-astra")
+    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261109T0000{i:02d}Z" for i in range(10)])
+    with stamps, mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
+        report = dispatch(**codex, **models, dry_run=True)
+        assert report["status"] == "dry_run", report
+        build_cmd, review_cmd = (item["command"] for item in report["results"])
+        assert build_cmd[build_cmd.index("--sandbox") + 1] == "workspace-write"
+        assert "sandbox_workspace_write.network_access=false" in build_cmd
+        assert {"sandbox_workspace_write.exclude_slash_tmp=true",
+                "sandbox_workspace_write.exclude_tmpdir_env_var=true"} <= set(build_cmd)
+        assert build_cmd[build_cmd.index("-m") + 1] == "gpt-6-luna"
+        assert review_cmd[review_cmd.index("-m") + 1] == "gpt-6-astra"
+        assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
+        assert report["flow"]["same_family"] is True
+        assert report["flow"]["builder_model"] == "gpt-6-luna"
+
+        calls: list[dict] = []
+        verdicts = ["BLOCKING", "PASS"]
+
+        def edit_only_build(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **kwargs):
+            calls.append({"label": label, "mode": mode, "prompt": prompt, "guard": kwargs.get("guard"),
+                          "model": kwargs.get("model"), "cwd": cwd})
+            last = dispatch_dir / f"{label}.last-message.md"
+            if mode == "implement":
+                (cwd / f"{label}.txt").write_text(label)  # no commit: the sandbox cannot write the gitdir
+            else:
+                last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
+            return {"provider": provider, "status": "dispatched", "last_message": str(last)}
+
+        opened = {"status": "opened", "url": "https://github.com/o/r/pull/2"}
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=edit_only_build), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ) as pr:
+            report = dispatch(**codex, **models)
+        assert report["status"] == "dispatched", report
+        assert [c["label"] for c in calls] == ["codex-build", "codex-review-0", "codex-fix-1", "codex-review-1"]
+        assert [c["model"] for c in calls] == ["gpt-6-luna", "gpt-6-astra", "gpt-6-luna", "gpt-6-astra"]
+        assert "do not commit" in calls[0]["prompt"].lower() and "do not commit" in calls[2]["prompt"].lower()
+        log = subprocess.run(["git", "-C", str(repo), "log", "--format=%s", report["flow"]["branch"]],
+                             capture_output=True, text=True).stdout.splitlines()
+        assert [line.split(":")[0] for line in log] == ["codex-fix-1", "codex-build", "init"], log
+        assert pr.call_args.kwargs["head"] == report["flow"]["reviews"][-1]["head"]
+        assert "gpt-6-luna" in pr.call_args.kwargs["body"] and "gpt-6-astra" in pr.call_args.kwargs["body"]
+
+        # A Codex build that edits nothing still ends as no_changes.
+        calls.clear()
+        with mock.patch("book_dev_ai_dispatch.run_provider",
+                        side_effect=lambda p, **k: {"provider": p, "status": "dispatched", "last_message": ""}):
+            report = dispatch(**codex, **models)
+        assert report["status"] == "no_changes", report
+
+    # Builder commands: model flags and the Codex network-off sandbox.
+    claude_cmd = build_provider_command("claude", prompt_file=tmp / "p", mode="implement", max_turns=3, cwd=tmp,
+                                        last_message_path=tmp / "l", guard="branch", model="opus")
+    assert claude_cmd[claude_cmd.index("--model") + 1] == "opus"
+    assert provider_env("codex", "release") is None, "release flow keeps the env"
+    with mock.patch.dict(os.environ, {"GH_TOKEN": "x", "PATH": "/bin"}):
+        env = provider_env("codex", "branch")
+        assert env is not None and "GH_TOKEN" not in env and env["PATH"] == "/bin"
+
     # The push sends the reviewed commit even when the branch has moved on since.
     reviewed = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "later"], check=True)
@@ -417,7 +485,8 @@ def main() -> int:
                 assert "MIRROR" not in env and "APP_URL" not in env and "KUBECONFIG" not in env
                 assert "RAILWAY_PROJECT_ID" not in env and "SENTRY_DSN" not in env and env["JAVA_HOME"] == "/j"
                 assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "PATH" in env
-                assert provider_env("codex") is None
+                assert provider_env("grok") is None and provider_env("codex", "release") is None
+                assert "GH_TOKEN" not in provider_env("codex"), "a Codex worktree build is scrubbed too"
                 assert provider_env("claude", "release") is None, "the legacy flow keeps its release credentials"
             assert run.call_args.kwargs["cwd"] == str(tmp / "repo")
 

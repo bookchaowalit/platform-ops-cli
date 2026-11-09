@@ -40,6 +40,18 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 ข้อจำกัดที่เหลือ: guard ตรวจจากข้อความคำสั่ง ไม่ใช่ sandbox ระดับ OS (security review รอบหลัง ๆ เจอเพียงรูปแบบ option ที่แปลกขึ้นเรื่อย ๆ ถ้าต้องการขอบเขตแข็งจริงต้องรัน builder ใน OS sandbox เช่น bubblewrap หรือ sandbox ของ Claude Code โดยไม่มี credential ใน HOME) โปรแกรมที่ตั้งใจหลบ (เช่น สคริปต์ที่ builder เขียนเองแล้วสั่งรัน) ยังเลี่ยงได้ ด่านสุดท้ายจึงเป็นเจ้าของที่อ่าน diff ใน PR ก่อน merge
 รายงานรีวิวทุกรอบอยู่ที่ `dispatch/<stamp>/codex-review-<n>.last-message.md` ส่วน `report.json` มี `flow` (branch, worktree, verdict รายรอบ, URL ของ PR)
 
+### Builder แบบ Codex (Luna) และการเลือกโมเดลแยกตามบทบาท (spec 2026-11-09)
+
+ใช้โควตา ChatGPT ที่มีอยู่แล้วเป็น worker ราคาถูก: `--providers codex --reviewer codex --builder-model gpt-6-luna --reviewer-model gpt-6-astra`
+(หรือ env `BOOK_DEV_DISPATCH_PROVIDERS=codex`, `BOOK_DEV_BUILDER_MODEL`, `BOOK_DEV_REVIEWER_MODEL`)
+
+ข้อกำหนด:
+- Builder `codex` รันใน OS sandbox ของ Codex (`--sandbox workspace-write`, `-c sandbox_workspace_write.network_access=false`) จึงเขียนได้แค่ใน worktree และออก network ไม่ได้ (push, `gh`, deploy ไม่ได้ทั้งที่ไม่มี guard hook) และรันโดยตัดตัวแปร env ที่ชื่อเป็น credential ออกเหมือน Claude
+- sandbox เขียน gitdir ของ worktree (อยู่ใน `.git/` ของ repo หลัก) ไม่ได้ builder จึง **ไม่ commit เอง** ให้แก้ไฟล์ทิ้งไว้ แล้ว dispatcher `git add -A` + commit ให้หลังแต่ละรอบ (ปิด hook ด้วย `-c core.hooksPath=/dev/null`, ข้อความ commit `<label>: <ชื่องาน>`) จากนั้นเข้ารีวิวตามเดิม
+- builder กับ reviewer เป็น provider เดียวกันได้เฉพาะ `codex` และต้องระบุโมเดลทั้งสองฝั่งที่ไม่ซ้ำกัน (`flow.same_family = true` ใน report) reviewer ยังรันใน checkout แยกแบบ read-only ด้วย context ใหม่ ถ้าเป็นงานเสี่ยง (auth, เงิน, ข้อมูลส่วนตัว) ให้ใช้ builder `claude` หรือให้ Claude รีวิวซ้ำก่อน merge
+- `--builder-model` ส่งเป็น `-m` ให้ Codex และ `--model` ให้ Claude; `--reviewer-model` ส่งเป็น `-m` ให้ Codex reviewer ถ้าไม่ระบุใช้ค่าเริ่มต้นของ CLI
+- builder `grok` และ Antigravity (`agy`) ยังไม่รองรับใน flow นี้: ไม่มี guard hook และ `agy --sandbox` ไม่ได้ระบุว่ากัน network/การเขียนนอก workspace
+
 ตั้ง `BOOK_DEV_DISPATCH_REVIEWER=none` เพื่อกลับไปใช้ flow เดิม (provider เดียว ทำงานใน checkout แล้ว commit, push, deploy ตามที่ repo ระบุ โดยไม่ผ่านรีวิว) ซึ่งไม่แนะนำ
 Mode `plan` ไม่ผ่านรีวิวเพราะไม่มีการแก้ไฟล์
 รันมือ: `task book-dev:dispatch:review -- --dry-run`

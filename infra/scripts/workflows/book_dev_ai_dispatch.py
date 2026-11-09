@@ -15,6 +15,8 @@ Usage:
     python3 book_dev_ai_dispatch.py --providers grok --mode plan --max-turns 4
     python3 book_dev_ai_dispatch.py --providers claude --mode plan
     python3 book_dev_ai_dispatch.py --providers claude --reviewer codex
+    python3 book_dev_ai_dispatch.py --providers codex --reviewer codex \
+        --builder-model gpt-6-luna --reviewer-model gpt-6-astra
 """
 
 from __future__ import annotations
@@ -56,6 +58,13 @@ GUARD_SCRIPT = WORKFLOW_DIR / "book_dev_dispatch_guard.py"
 SKILL_FILE = SKILLS_ROOT / "book-dev-engineering-loop" / "SKILL.md"
 MODES = {"plan", "implement"}
 SUPPORTED_REVIEWERS = {"codex"}
+# Builders in the build-review flow. Claude runs under the dispatch guard; Codex runs in
+# its OS sandbox with the network off, which cannot write the worktree's gitdir, so the
+# dispatcher commits its edits.
+BUILD_REVIEW_BUILDERS = {"claude", "codex"}
+DISPATCHER_COMMITS = {"codex"}
+BUILDER_MODEL_ENV = "BOOK_DEV_BUILDER_MODEL"
+REVIEWER_MODEL_ENV = "BOOK_DEV_REVIEWER_MODEL"
 MAX_FIX_ROUNDS = 2
 # Files an agent CLI may load as instructions. The reviewer runs with project
 # docs disabled; a branch touching any of these still goes to the owner unreviewed.
@@ -197,7 +206,12 @@ def parse_providers(raw: str) -> list[str]:
 
 
 def build_prompt(
-    ticket: dict[str, Any], *, mode: str, branch: str | None = None, worktree: Path | None = None
+    ticket: dict[str, Any],
+    *,
+    mode: str,
+    branch: str | None = None,
+    worktree: Path | None = None,
+    builder_commits: bool = True,
 ) -> str:
     selected = ticket.get("selected") or {}
     task = selected.get("task") or {}
@@ -219,8 +233,13 @@ def build_prompt(
         repo_line = worktree
         # The startup brief carries the push/deploy closeout of the single-provider flow.
         startup = "(omitted: the worktree rules above replace its release steps)"
+        commit = (
+            "commit only scoped files on this branch."
+            if builder_commits
+            else "do not commit: leave your edits in the working tree and the\n    dispatcher commits them (your sandbox cannot write the git directory)."
+        )
         release = f"""- You are in a dedicated worktree on branch `{branch}`. After verification,
-    commit only scoped files on this branch. Do not push, deploy, switch
+    {commit} Do not push, deploy, switch
     branches or open PRs: the dispatcher sends your commits to an independent
     reviewer and opens the pull request; the owner approves merge and deploy.
     This overrides any push, deploy or release step in the ticket markdown or
@@ -289,7 +308,9 @@ def build_provider_command(
     read_dirs: tuple[Path, ...] = (),
     isolated_review: bool = False,
     guard: str = "release",
+    model: str | None = None,
 ) -> list[str]:
+    model_flag = ["-m", model] if model else []
     if provider == "grok":
         cmd = resolve_grok_cmd()
         if not cmd:
@@ -319,10 +340,19 @@ def build_provider_command(
         # An isolated review must not load AGENTS.md (or overrides) from the
         # builder's commit as its own instructions.
         isolation = ["-c", "project_doc_max_bytes=0"] if isolated_review else []
+        if mode != "plan" and guard == "branch":
+            # A worktree build has no guard hook: the sandbox keeps it off the network and
+            # out of /tmp and $TMPDIR, where the review checkout is created next.
+            isolation += [
+                "-c", "sandbox_workspace_write.network_access=false",
+                "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+                "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+            ]
         # Feed prompt via stdin for portability across codex versions.
         return [
             *cmd,
             "exec",
+            *model_flag,
             *isolation,
             "--cd",
             str(cwd),
@@ -350,6 +380,7 @@ def build_provider_command(
         return [
             *cmd,
             "-p",
+            *(["--model", model] if model else []),
             *extra_dirs,
             "--permission-mode",
             "plan" if mode == "plan" else "acceptEdits",
@@ -385,11 +416,11 @@ CLAUDE_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AU
 
 
 def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
-    """A Claude worktree build runs without push, deploy and cloud credentials.
+    """A Claude or Codex worktree build runs without push, deploy and cloud credentials.
 
-    The legacy single-provider flow (guard ``release``) pushes and deploys itself, so it
-    and the other providers inherit the environment."""
-    if provider != "claude" or guard != "branch":
+    The legacy single-provider flow (guard ``release``) pushes and deploys itself, so it,
+    the reviewer and the other providers inherit the environment."""
+    if provider not in BUILD_REVIEW_BUILDERS or guard != "branch":
         return None
     return {
         name: value for name, value in os.environ.items()
@@ -412,6 +443,7 @@ def run_provider(
     label: str | None = None,
     isolated_review: bool = False,
     guard: str = "release",
+    model: str | None = None,
 ) -> dict[str, Any]:
     name = label or provider
     log_path = dispatch_dir / f"{name}.log"
@@ -437,6 +469,7 @@ def run_provider(
             read_dirs=(dispatch_dir.parent.parent, SKILL_FILE.parent),
             isolated_review=isolated_review,
             guard=guard,
+            model=model,
         )
     except RuntimeError as exc:
         result["status"] = "unavailable"
@@ -531,12 +564,17 @@ End with exactly one line: `VERDICT: PASS` (no blocking findings) or
 """
 
 
-def build_fix_prompt(base_prompt: str, review: str, round_no: int) -> str:
+def build_fix_prompt(base_prompt: str, review: str, round_no: int, builder_commits: bool = True) -> str:
+    finish = (
+        "commit the fix on the same branch"
+        if builder_commits
+        else "leave the fix in the working tree (do not commit; the dispatcher commits it)"
+    )
     return f"""{base_prompt}
 
 Fix round {round_no}: an independent reviewer found blocking issues in your
 commits. Fix only the blocking findings below (verify each against the code
-first), re-run the checks, and commit the fix on the same branch. If a finding
+first), re-run the checks, and {finish}. If a finding
 is wrong, say why in your report instead of changing code.
 
 Reviewer report:
@@ -598,8 +636,12 @@ def build_review(
     max_turns: int,
     timeout_sec: int,
     dry_run: bool,
+    builder_model: str | None = None,
+    reviewer_model: str | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Builder commits in a worktree, reviewer gates it, a passing branch becomes a PR."""
+
+    builder_commits = builder not in DISPATCHER_COMMITS
 
     branch = _branch_name(ticket, stamp)
     base_branch = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "main"
@@ -610,6 +652,10 @@ def build_review(
         "name": "build-review",
         "builder": builder,
         "reviewer": reviewer,
+        "builder_model": builder_model,
+        "reviewer_model": reviewer_model,
+        "same_family": builder == reviewer,
+        "dispatcher_commits": not builder_commits,
         "branch": branch,
         "base_branch": base_branch,
         "base": base,
@@ -618,16 +664,22 @@ def build_review(
         "reviews": [],
         "pull_request": None,
     }
-    prompt = build_prompt(ticket, mode="implement", branch=branch, worktree=worktree)
+    prompt = build_prompt(ticket, mode="implement", branch=branch, worktree=worktree, builder_commits=builder_commits)
     prompt_file = write_prompt_file(prompt, dispatch_dir)
+    task = ((ticket.get("selected") or {}).get("task") or {})
+    title = _clean(task.get("title"), 120) or branch
     common: dict[str, Any] = dict(max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=dispatch_dir)
     results: list[dict[str, Any]] = []
 
     if dry_run:
-        for provider, mode, label in ((builder, "implement", f"{builder}-build"), (reviewer, "plan", f"{reviewer}-review")):
+        for provider, mode, label, model in (
+            (builder, "implement", f"{builder}-build", builder_model),
+            (reviewer, "plan", f"{reviewer}-review", reviewer_model),
+        ):
             results.append(run_provider(
                 provider, prompt=prompt, prompt_file=prompt_file, mode=mode, dry_run=True,
-                cwd=repo_dir, label=label, isolated_review=mode == "plan", guard="branch", **common,
+                cwd=repo_dir, label=label, isolated_review=mode == "plan",
+                guard="branch" if mode == "implement" else "release", model=model, **common,
             ))
         statuses = {item["status"] for item in results}
         return ("dry_run" if statuses == {"dry_run"} else "unavailable"), results, flow
@@ -653,15 +705,24 @@ def build_review(
         return "failed", results, {**flow, "error": _clean(added.stderr, 400)}
 
     def build(round_no: int, review: str | None) -> dict[str, Any]:
-        text = prompt if review is None else build_fix_prompt(prompt, review, round_no)
+        text = prompt if review is None else build_fix_prompt(prompt, review, round_no, builder_commits)
         label = f"{builder}-build" if review is None else f"{builder}-fix-{round_no}"
         # Grok reads --prompt-file, so each round gets its own file.
         round_file = prompt_file if review is None else write_prompt_file(text, dispatch_dir, f"{label}.prompt.md")
         result = run_provider(
             builder, prompt=text, prompt_file=round_file, mode="implement", dry_run=False,
-            cwd=worktree, label=label, guard="branch", **common,
+            cwd=worktree, label=label, guard="branch", model=builder_model, **common,
         )
         results.append(result)
+        if result["status"] == "dispatched" and not builder_commits and dirty():
+            # The sandboxed builder cannot write the gitdir; commit its edits with hooks off.
+            nohooks = ("-c", "core.hooksPath=/dev/null")
+            added = _git(worktree, *nohooks, "add", "-A")
+            committed = added if added.returncode != 0 else _git(
+                worktree, *nohooks, "commit", "-q", "--no-verify", "-m", f"{label}: {title}"
+            )
+            if committed.returncode != 0:
+                result.update(status="failed", error=f"dispatcher commit failed: {_clean(committed.stderr, 300)}")
         return result
 
     def dirty() -> bool:
@@ -720,7 +781,7 @@ def build_review(
                 review = run_provider(
                     reviewer, prompt=review_prompt,
                     prompt_file=write_prompt_file(review_prompt, Path(private), "prompt.md"),
-                    mode="plan", dry_run=False, cwd=review_tree, label=label,
+                    mode="plan", dry_run=False, cwd=review_tree, label=label, model=reviewer_model,
                     max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=Path(private),
                     isolated_review=True,
                 )
@@ -760,10 +821,11 @@ def build_review(
         flow["worktree_kept"] = True
         return "failed", results, {**flow, "error": "branch moved after the passing review"}
 
-    task = ((ticket.get("selected") or {}).get("task") or {})
-    title = _clean(task.get("title"), 120) or branch
+    def who(provider: str, model: str | None) -> str:
+        return f"`{provider}`" + (f" (`{model}`)" if model else "")
+
     body = (
-        f"Built by `{builder}` and reviewed read-only by `{reviewer}` "
+        f"Built by {who(builder, builder_model)} and reviewed read-only by {who(reviewer, reviewer_model)} "
         f"({len(flow['reviews'])} review round(s), final verdict PASS on {head}).\n\n"
         f"Ticket: {task.get('id')}\n\n"
         "Merge and deploy need owner approval after CI passes.\n\n"
@@ -818,6 +880,8 @@ def dispatch(
     dry_run: bool = False,
     write_ticket: bool = True,
     reviewer: str | None = None,
+    builder_model: str | None = None,
+    reviewer_model: str | None = None,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {sorted(MODES)}")
@@ -832,11 +896,16 @@ def dispatch(
             raise ValueError(f"unsupported reviewer: {reviewer}")
         if mode != "implement" or len(selected_providers) != 1:
             raise ValueError("build-review flow needs implement mode and exactly one builder")
-        if selected_providers[0] == reviewer:
-            raise ValueError("builder and reviewer must be different providers")
-        if selected_providers[0] != "claude":
-            # Only Claude runs under the dispatch guard and a scrubbed env; another builder could push first.
-            raise ValueError("build-review flow supports only the claude builder")
+        builder_model = builder_model or os.environ.get(BUILDER_MODEL_ENV) or None
+        reviewer_model = reviewer_model or os.environ.get(REVIEWER_MODEL_ENV) or None
+        if selected_providers[0] not in BUILD_REVIEW_BUILDERS:
+            # Claude runs under the dispatch guard, Codex in its network-off sandbox; another builder could push first.
+            raise ValueError("build-review flow supports only the claude or codex builder")
+        if selected_providers[0] == reviewer and not (
+            builder_model and reviewer_model and builder_model != reviewer_model
+        ):
+            # Same family is allowed only as two different models, each in its own context.
+            raise ValueError("builder and reviewer on the same provider need two different models")
     ticket = load_ticket(ticket_path)
     if not ticket.get("selected"):
         raise ValueError("execution ticket has no selected candidate to dispatch")
@@ -850,6 +919,7 @@ def dispatch(
             ticket=ticket, builder=selected_providers[0], reviewer=reviewer, repo_dir=repo_dir,
             dispatch_dir=dispatch_dir, stamp=stamp, max_turns=max_turns,
             timeout_sec=timeout_sec, dry_run=dry_run,
+            builder_model=builder_model, reviewer_model=reviewer_model,
         )
         return _finish_report(
             ticket_path, ticket, dispatch_dir, mode=mode, providers=selected_providers,
@@ -967,6 +1037,16 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(SUPPORTED_REVIEWERS),
         help="Build-review flow: worktree branch, read-only review, then a pull request",
     )
+    parser.add_argument(
+        "--builder-model",
+        default=os.environ.get(BUILDER_MODEL_ENV),
+        help="Builder model in the build-review flow, e.g. gpt-6-luna (codex) or opus (claude)",
+    )
+    parser.add_argument(
+        "--reviewer-model",
+        default=os.environ.get(REVIEWER_MODEL_ENV),
+        help="Reviewer model in the build-review flow, e.g. gpt-6-astra",
+    )
     parser.add_argument("--max-turns", type=int, default=24)
     parser.add_argument("--timeout-sec", type=int, default=1800)
     parser.add_argument("--dry-run", action="store_true")
@@ -991,6 +1071,8 @@ def main() -> int:
             dry_run=args.dry_run,
             write_ticket=not args.no_write_ticket,
             reviewer=args.reviewer,
+            builder_model=args.builder_model,
+            reviewer_model=args.reviewer_model,
         )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError) as exc:
         payload = {"contract": CONTRACT, "status": "error", "error": str(exc)}
