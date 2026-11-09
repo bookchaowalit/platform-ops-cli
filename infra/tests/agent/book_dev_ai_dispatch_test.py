@@ -107,6 +107,9 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
 
 
 def build_review_tests(tmp: Path) -> None:
+    # Model defaults come from the environment; the timer's values must not leak into these tests.
+    for name in ("BOOK_DEV_BUILDER_MODEL", "BOOK_DEV_REVIEWER_MODEL"):
+        os.environ.pop(name, None)
     assert parse_verdict("x\nVERDICT: PASS") == "pass"
     assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
     assert parse_verdict("VERDICT: PASS\nlater\nVERDICT: BLOCKING") == "blocking"
@@ -365,6 +368,31 @@ def build_review_tests(tmp: Path) -> None:
         assert report["flow"]["worktree_kept"] is True
         pr.assert_not_called()
 
+        # A repo filter that would run a script never runs in any dispatcher git command, and the
+        # committed blob is the raw content (scanned for secrets, never an LFS pointer).
+        ran = tmp / "filter-ran.txt"
+        evil = tmp / "evil-filter.sh"
+        evil.write_text(f"#!/bin/sh\ntouch {ran}\ncat\n")
+        evil.chmod(0o755)
+        for key, value in (("filter.x.clean", str(evil)), ("filter.x.smudge", str(evil)),
+                           ("filter.x.process", str(evil)), ("filter.x.required", "true")):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+
+        def filtered_build(provider, *, mode, dispatch_dir, cwd, label=None, **_):
+            if mode == "implement":
+                (cwd / ".gitattributes").write_text("*.bin filter=x\n")
+                (cwd / f"{label}.bin").write_text("data\n")
+            else:
+                (dispatch_dir / f"{label}.last-message.md").write_text("ok\nVERDICT: PASS\n")
+            return {"provider": provider, "status": "dispatched", "last_message": str(dispatch_dir / f"{label}.last-message.md")}
+
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=filtered_build), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ):
+            report = dispatch(**codex, **models)
+        subprocess.run(["git", "-C", str(repo), "config", "--remove-section", "filter.x"], check=True)
+        assert report["status"] == "dispatched" and not ran.exists(), report
+
         # The dispatcher's commit never signs: gpg.program could be a script in the checkout.
         signer = tmp / "signer.sh"
         signed = tmp / "signed.txt"
@@ -442,42 +470,18 @@ def build_review_tests(tmp: Path) -> None:
                     return_value=subprocess.CompletedProcess([], 124, b"", b"timed out")):
         assert secret_findings(scan, start, sha()) == [SECRET_SCAN_FAILED], "a failed scan blocks"
 
-    # Git filters the dispatcher's `git add` would run: only git-lfs is trusted.
-    # Runner images configure git-lfs globally; these checks see repository config only.
+    # Every configured filter driver (git-lfs included) becomes a no-op for dispatcher git commands.
+    from book_dev_ai_dispatch import filter_overrides
     no_global = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
     no_global.start()
-    from book_dev_ai_dispatch import untrusted_filters
-    assert untrusted_filters(scan) == []
-    subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
-    real_lfs = mock.patch("book_dev_ai_dispatch.shutil.which", return_value="/usr/bin/git-lfs")
-    with real_lfs, mock.patch.object(Path, "resolve", lambda self, strict=False: Path(os.path.abspath(self))):
-        assert untrusted_filters(scan) == [], "the standard git-lfs command installed outside the repo is trusted"
-    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.lfs.clean"], check=True)
-    subprocess.run(["git", "-C", str(scan), "config", "filter.x.clean", "./scripts/clean.sh"], check=True)
-    assert untrusted_filters(scan) == ["filter.x.clean"]
-    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.x.clean"], check=True)
-    # Basenames, shell suffixes and repository-local programs do not pass as git-lfs.
-    for i, command in enumerate(("./scripts/git-lfs clean -- %f", "git-lfs clean -- %f; ./evil.sh",
-                                 "git lfs smudge -- %f && curl x", "git-lfs clean -- %f $(./x)", "git lfs clean -- %f")):
-        subprocess.run(["git", "-C", str(scan), "config", f"filter.y{i}.clean", command], check=True)
-    assert untrusted_filters(scan) == [f"filter.y{i}.clean" for i in range(5)], untrusted_filters(scan)
-    for i in range(5):
-        subprocess.run(["git", "-C", str(scan), "config", "--unset", f"filter.y{i}.clean"], check=True)
-    bin_dir = scan / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "git-lfs").write_text("#!/bin/sh\n")
-    (bin_dir / "git-lfs").chmod(0o755)
-    subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
-    with mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}):
-        assert untrusted_filters(scan) == ["filter.lfs.clean"], "a git-lfs inside the repository is not trusted"
-    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.lfs.clean"], check=True)
-    # LFS extensions run their own programs: refused, from git config or from .lfsconfig in the tree.
-    subprocess.run(["git", "-C", str(scan), "config", "lfs.extension.x.clean", "./scripts/clean"], check=True)
-    assert untrusted_filters(scan) == ["lfs.extension.x.clean"], untrusted_filters(scan)
-    subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "lfs.extension.x"], check=True)
-    (scan / ".lfsconfig").write_text('[lfs "extension.y"]\n\tclean = ./c\n')
-    assert untrusted_filters(scan) == [".lfsconfig extension"]
-    (scan / ".lfsconfig").unlink()
+    assert filter_overrides(scan) == ()
+    subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.process", "git-lfs filter-process"], check=True)
+    subprocess.run(["git", "-C", str(scan), "config", "filter.my.tool.clean", "./scripts/clean.sh"], check=True)
+    args = filter_overrides(scan)
+    assert args is not None
+    assert "filter.lfs.process=" in args and "filter.lfs.clean=cat" in args and "filter.my.tool.clean=cat" in args, args
+    subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "filter.lfs"], check=True)
+    subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "filter.my.tool"], check=True)
     # Long uppercase lines do not make the dotenv pattern backtrack for long.
     import time
     from book_dev_ai_dispatch import SECRET_CONTENT_BYTES_RE
