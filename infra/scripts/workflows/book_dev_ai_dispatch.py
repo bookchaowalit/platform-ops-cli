@@ -63,6 +63,29 @@ SUPPORTED_REVIEWERS = {"codex"}
 # dispatcher commits its edits.
 BUILD_REVIEW_BUILDERS = {"claude", "codex"}
 DISPATCHER_COMMITS = {"codex"}
+# Codex in the build-review flow loads no user config, MCP servers, plugins or app
+# connectors: those act outside the sandbox (open a PR, deploy) before the review gate.
+CODEX_ISOLATION = (
+    "--ignore-user-config", "-c", "mcp_servers={}", "-c", 'web_search="disabled"',  # a query could carry data out
+    *(arg for feature in ("apps", "plugins", "remote_plugin", "browser_use", "computer_use", "in_app_browser",
+                          "image_generation", "multi_agent") for arg in ("--disable", feature)),
+)
+# Auth variables each builder keeps after the credential scrub.
+PROVIDER_AUTH_ENV = {
+    "claude": frozenset({"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}),
+    "codex": frozenset({"OPENAI_API_KEY", "CODEX_API_KEY"}),
+}
+# Credentials a builder must never commit: it can read files outside its write sandbox.
+SECRET_CONTENT_RE = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_\w{20,}|\bsk-ant-[\w-]{20,}"
+    r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bglpat-[\w-]{20,}"
+    r"|\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}"
+)
+SECRET_FILE_RE = re.compile(
+    r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
+    r"|id_(rsa|dsa|ecdsa|ed25519)[\w.-]*|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.?credentials\.json)$",
+    re.IGNORECASE,
+)
 BUILDER_MODEL_ENV = "BOOK_DEV_BUILDER_MODEL"
 REVIEWER_MODEL_ENV = "BOOK_DEV_REVIEWER_MODEL"
 MAX_FIX_ROUNDS = 2
@@ -340,6 +363,8 @@ def build_provider_command(
         # An isolated review must not load AGENTS.md (or overrides) from the
         # builder's commit as its own instructions.
         isolation = ["-c", "project_doc_max_bytes=0"] if isolated_review else []
+        if isolated_review or guard == "branch":
+            isolation += list(CODEX_ISOLATION)
         if mode != "plan" and guard == "branch":
             # A worktree build has no guard hook: the sandbox keeps it off the network and
             # out of /tmp and $TMPDIR, where the review checkout is created next.
@@ -412,7 +437,7 @@ CREDENTIAL_ENV_RE = re.compile(
     r"|DATABASE|REDIS|MONGO\w*|POSTGRES\w*|PG|MYSQL|AMQP|RABBITMQ)_|^KUBECONFIG$"
 )
 URL_CREDENTIAL_RE = re.compile(r"://[^\s/]*@")  # any userinfo before the host
-CLAUDE_AUTH_ENV = {"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+CLAUDE_AUTH_ENV = PROVIDER_AUTH_ENV["claude"]
 
 
 def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
@@ -422,9 +447,10 @@ def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
     the reviewer and the other providers inherit the environment."""
     if provider not in BUILD_REVIEW_BUILDERS or guard != "branch":
         return None
+    keep = PROVIDER_AUTH_ENV[provider]
     return {
         name: value for name, value in os.environ.items()
-        if name in CLAUDE_AUTH_ENV
+        if name in keep
         or not (CREDENTIAL_ENV_RE.search(name.upper()) or URL_CREDENTIAL_RE.search(value))
     }
 
@@ -538,6 +564,25 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         )
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(["git", *args], 124, "", f"git {args[0]} timed out after 120s")
+
+
+def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
+    """Changed paths that look like credential files or add credential-shaped text (values never returned)."""
+    changed = [p for p in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if p]
+    hits = [p for p in changed if SECRET_FILE_RE.search(p)]
+    current = None
+    diff = _git(worktree, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--text", "-U0", f"{base}..{head}")
+    for line in diff.stdout.splitlines():
+        if line.startswith("+++ "):
+            current = line[6:] if line.startswith("+++ b/") else None
+        elif line.startswith("+") and current and current not in hits and SECRET_CONTENT_RE.search(line):
+            hits.append(current)
+    return hits
+
+
+def _trusted_cli(command: list[str] | None) -> bool:
+    """An installed CLI on PATH; npx would resolve node_modules/.bin from the builder's tree."""
+    return bool(command) and Path(command[0]).name not in {"npx", "npx.cmd"}
 
 
 def _branch_name(ticket: dict[str, Any], stamp: str) -> str:
@@ -687,7 +732,7 @@ def build_review(
     if not base:
         return "failed", results, {**flow, "error": "repository has no HEAD commit"}
     availability = provider_availability()
-    missing = [name for name in (builder, reviewer) if not availability[name]["available"]]
+    missing = [name for name in (builder, reviewer) if not _trusted_cli(availability[name]["command"])]
     if missing:
         # Check before creating the worktree so a missing CLI leaves nothing behind.
         return "unavailable", results, {**flow, "error": f"CLI not found: {', '.join(missing)}"}
@@ -764,6 +809,11 @@ def build_review(
             return "failed", results, {**flow, "error": f"branch no longer descends from {base[:12]}"}
         changed = [path for path in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
         flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
+        flow["secret_findings"] = secret_findings(worktree, base, head)
+        if flow["secret_findings"]:
+            # Nothing that looks like a credential goes to the reviewer, the remote or a PR.
+            flow["worktree_kept"] = True
+            return "review_blocked", results, {**flow, "error": "branch adds credential-shaped content"}
         if flow["agent_instruction_files"]:
             # The reviewer would load these as its own instructions: owner reviews by hand.
             flow["worktree_kept"] = True

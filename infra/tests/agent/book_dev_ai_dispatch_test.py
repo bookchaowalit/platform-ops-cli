@@ -297,6 +297,11 @@ def build_review_tests(tmp: Path) -> None:
         assert review_cmd[review_cmd.index("-m") + 1] == "gpt-6-astra"
         assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
         assert report["flow"]["same_family"] is True
+        # No user config, MCP servers, plugins or app connectors in either Codex role.
+        for cmd in (build_cmd, review_cmd):
+            assert "--ignore-user-config" in cmd and "mcp_servers={}" in cmd, cmd
+            assert 'web_search="disabled"' in cmd, cmd
+            assert cmd[cmd.index("apps") - 1] == "--disable" and cmd[cmd.index("plugins") - 1] == "--disable"
         assert report["flow"]["builder_model"] == "gpt-6-luna"
 
         calls: list[dict] = []
@@ -327,12 +332,41 @@ def build_review_tests(tmp: Path) -> None:
         assert pr.call_args.kwargs["head"] == report["flow"]["reviews"][-1]["head"]
         assert "gpt-6-luna" in pr.call_args.kwargs["body"] and "gpt-6-astra" in pr.call_args.kwargs["body"]
 
+        # A builder that writes a credential it read elsewhere never reaches the reviewer or a PR.
+        calls.clear()
+
+        def leak(provider, *, mode, dispatch_dir, cwd, label=None, **_):
+            calls.append({"label": label})
+            if mode == "implement":
+                (cwd / "notes.txt").write_text("token = gh" + "p_" + "A" * 36 + "\n")
+            return {"provider": provider, "status": "dispatched", "last_message": str(dispatch_dir / "x")}
+
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=leak), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request"
+        ) as pr:
+            report = dispatch(**codex, **models)
+        assert report["status"] == "review_blocked" and report["flow"]["secret_findings"] == ["notes.txt"], report
+        assert "A" * 36 not in json.dumps(report), "the value itself is never reported"
+        assert [c["label"] for c in calls] == ["codex-build"]
+        pr.assert_not_called()
+
         # A Codex build that edits nothing still ends as no_changes.
         calls.clear()
         with mock.patch("book_dev_ai_dispatch.run_provider",
                         side_effect=lambda p, **k: {"provider": p, "status": "dispatched", "last_message": ""}):
             report = dispatch(**codex, **models)
         assert report["status"] == "no_changes", report
+
+    # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
+    with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):
+        report = dispatch(**codex, **models)
+    assert report["status"] == "unavailable" and "codex" in report["flow"]["error"], report
+
+    # Each builder keeps only its own auth variables.
+    with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "o", "CLAUDE_CODE_OAUTH_TOKEN": "c"}):
+        codex_env, claude_env = provider_env("codex", "branch"), provider_env("claude", "branch")
+    assert codex_env["OPENAI_API_KEY"] == "o" and "CLAUDE_CODE_OAUTH_TOKEN" not in codex_env
+    assert claude_env["CLAUDE_CODE_OAUTH_TOKEN"] == "c" and "OPENAI_API_KEY" not in claude_env
 
     # Builder commands: model flags and the Codex network-off sandbox.
     claude_cmd = build_provider_command("claude", prompt_file=tmp / "p", mode="implement", max_turns=3, cwd=tmp,

@@ -47,6 +47,11 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 
 ข้อกำหนด:
 - Builder `codex` รันใน OS sandbox ของ Codex (`--sandbox workspace-write`, `-c sandbox_workspace_write.network_access=false`) จึงเขียนได้แค่ใน worktree และออก network ไม่ได้ (push, `gh`, deploy ไม่ได้ทั้งที่ไม่มี guard hook) และรันโดยตัดตัวแปร env ที่ชื่อเป็น credential ออกเหมือน Claude
+- Codex ทั้ง builder และ reviewer รันด้วย `--ignore-user-config`, `mcp_servers={}`, `web_search="disabled"` และปิด feature `apps`, `plugins`, `browser_use`, `computer_use` … เพราะ MCP/connector ทำงานนอก sandbox (เปิด PR หรือ deploy ได้ก่อนผ่านรีวิว) และ query ค้นเว็บพาข้อมูลออกได้ (ทดสอบสด 2026-11-09: เหลือแค่ shell และ tool ภายใน)
+- dispatcher ต้องเจอ `codex` ที่ติดตั้งใน PATH จริง ไม่ใช้ `npx` fallback ใน flow นี้ (npx จะหา `node_modules/.bin/codex` จาก tree ของ builder)
+- ก่อนรีวิวทุกรอบ dispatcher สแกน diff `base..head` หาไฟล์ credential (`.env`, `*.pem`, `id_rsa` …) และข้อความรูปแบบ token/private key ถ้าเจอจะหยุดเป็น `review_blocked` (`flow.secret_findings` บอกแค่ path ไม่บอกค่า) ใช้กับ builder ทุกตัว
+- ข้อจำกัดที่เหลือ: sandbox ของ Codex จำกัดการเขียนและ network แต่ไม่จำกัดการอ่าน builder จึงยังอ่านไฟล์ใน HOME แล้วส่งเข้า context ของโมเดลได้ การสแกน diff กันได้แค่การ commit ออกมา
+- builder แต่ละตัวเก็บเฉพาะตัวแปร auth ของตัวเองหลังการตัด env (`codex`: `OPENAI_API_KEY`, `CODEX_API_KEY`; `claude`: token ของ Claude)
 - sandbox เขียน gitdir ของ worktree (อยู่ใน `.git/` ของ repo หลัก) ไม่ได้ builder จึง **ไม่ commit เอง** ให้แก้ไฟล์ทิ้งไว้ แล้ว dispatcher `git add -A` + commit ให้หลังแต่ละรอบ (ปิด hook ด้วย `-c core.hooksPath=/dev/null`, ข้อความ commit `<label>: <ชื่องาน>`) จากนั้นเข้ารีวิวตามเดิม
 - builder กับ reviewer เป็น provider เดียวกันได้เฉพาะ `codex` และต้องระบุโมเดลทั้งสองฝั่งที่ไม่ซ้ำกัน (`flow.same_family = true` ใน report) reviewer ยังรันใน checkout แยกแบบ read-only ด้วย context ใหม่ ถ้าเป็นงานเสี่ยง (auth, เงิน, ข้อมูลส่วนตัว) ให้ใช้ builder `claude` หรือให้ Claude รีวิวซ้ำก่อน merge
 - `--builder-model` ส่งเป็น `-m` ให้ Codex และ `--model` ให้ Claude; `--reviewer-model` ส่งเป็น `-m` ให้ Codex reviewer ถ้าไม่ระบุใช้ค่าเริ่มต้นของ CLI
