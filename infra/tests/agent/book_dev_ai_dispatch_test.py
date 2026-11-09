@@ -108,7 +108,8 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
 
 def build_review_tests(tmp: Path) -> None:
     # Model defaults come from the environment; the timer's values must not leak into these tests.
-    for name in ("BOOK_DEV_BUILDER_MODEL", "BOOK_DEV_REVIEWER_MODEL"):
+    for name in ("BOOK_DEV_BUILDER_MODEL", "BOOK_DEV_REVIEWER_MODEL", "BOOK_DEV_BUILDER_EFFORT",
+                 "BOOK_DEV_REVIEWER_EFFORT", "BOOK_DEV_ESCALATE", "BOOK_DEV_ESCALATION_MODEL"):
         os.environ.pop(name, None)
     assert parse_verdict("x\nVERDICT: PASS") == "pass"
     assert parse_verdict("**VERDICT: BLOCKING**") == "blocking"
@@ -163,7 +164,7 @@ def build_review_tests(tmp: Path) -> None:
         assert [item["provider"] for item in report["results"]] == ["claude", "codex"]
         review_cmd = report["results"][1]["command"]
         assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
-        assert review_cmd[review_cmd.index("-c") + 1] == "project_doc_max_bytes=0"
+        assert "project_doc_max_bytes=0" in review_cmd
         assert report["policy"]["automatic_release_closeout"] is False
         assert report["flow"]["branch"].startswith("ai/2135-")
 
@@ -287,7 +288,7 @@ def build_review_tests(tmp: Path) -> None:
         except ValueError:
             pass
     models = dict(builder_model="gpt-6-luna", reviewer_model="gpt-6.1-sol")
-    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261109T0000{i:02d}Z" for i in range(10)])
+    stamps = mock.patch("book_dev_ai_dispatch._now_stamp", side_effect=[f"20261109T0000{i:02d}Z" for i in range(60)])
     with stamps, mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
         report = dispatch(**codex, **models, dry_run=True)
         assert report["status"] == "dry_run", report
@@ -300,6 +301,17 @@ def build_review_tests(tmp: Path) -> None:
         assert review_cmd[review_cmd.index("-m") + 1] == "gpt-6.1-sol"
         assert review_cmd[review_cmd.index("--sandbox") + 1] == "read-only"
         assert report["flow"]["same_family"] is True
+        # Luna thinks at xhigh by default, the reviewer at high; both overridable, unknown values refused.
+        assert "model_reasoning_effort=xhigh" in build_cmd and "model_reasoning_effort=high" in review_cmd
+        assert report["flow"]["escalation"] == {"to": "claude", "model": "opus", "used": False}
+        with mock.patch.dict(os.environ, {"BOOK_DEV_BUILDER_EFFORT": "medium"}):
+            low = dispatch(**codex, **models, dry_run=True)["results"][0]["command"]
+        assert "model_reasoning_effort=medium" in low
+        try:
+            dispatch(**codex, **models, builder_effort="turbo", dry_run=True)
+            raise AssertionError("expected rejection of an unknown effort")
+        except ValueError:
+            pass
         # No user config, MCP servers, plugins or app connectors in either Codex role.
         for cmd in (build_cmd, review_cmd):
             assert "--ignore-user-config" in cmd and "--ignore-rules" in cmd and "mcp_servers={}" in cmd, cmd
@@ -408,6 +420,62 @@ def build_review_tests(tmp: Path) -> None:
         subprocess.run(["git", "-C", str(repo), "config", "--unset", "commit.gpgsign"], check=True)
         subprocess.run(["git", "-C", str(repo), "config", "--unset", "gpg.program"], check=True)
         assert report["status"] == "dispatched" and not signed.exists(), report
+
+        # Still blocking after the builder's fix rounds: Claude writes a plan once (read-only, fresh
+        # checkout, every review report), the builder gets one more round on it, then the owner.
+        def escalation_run(verdict_list: list[str], plan_status: str = "dispatched"):
+            seen: list[dict] = []
+
+            def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **kwargs):
+                seen.append({"provider": provider, "mode": mode, "label": label, "prompt": prompt,
+                             "guard": kwargs.get("guard"), "model": kwargs.get("model"), "cwd": cwd})
+                last = dispatch_dir / f"{label}.last-message.md"
+                if provider == "claude":
+                    last.write_text("PLAN: change foo() in a.py\n")
+                    return {"provider": provider, "status": plan_status, "last_message": str(last)}
+                if mode == "implement":
+                    (cwd / f"{label}.txt").write_text(label)
+                else:
+                    last.write_text(f"finding {label}\nVERDICT: {verdict_list.pop(0)}\n")
+                return {"provider": provider, "status": "dispatched", "last_message": str(last)}
+            return run, seen
+
+        run, seen = escalation_run(["BLOCKING", "BLOCKING", "BLOCKING", "PASS"])
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request", return_value=opened
+        ):
+            report = dispatch(**codex, **models)
+        assert report["status"] == "dispatched", report
+        assert [s["label"] for s in seen] == ["codex-build", "codex-review-0", "codex-fix-1", "codex-review-1",
+                                             "codex-fix-2", "codex-review-2", "claude-plan", "codex-fix-3", "codex-review-3"]
+        plan_call = seen[6]
+        assert plan_call["mode"] == "plan" and plan_call["model"] == "opus" and plan_call["guard"] == "branch"
+        assert all(f"finding codex-review-{i}" in plan_call["prompt"] for i in range(3)), "every review report reaches the planner"
+        assert "+codex-fix-2" in plan_call["prompt"], "the planner gets the diff (plan mode has no shell)"
+        assert plan_call["cwd"] != seen[4]["cwd"] and not plan_call["cwd"].exists(), "fresh checkout, removed after"
+        assert "PLAN: change foo() in a.py" in seen[7]["prompt"] and "escalated" in seen[7]["prompt"]
+        assert report["flow"]["escalation"]["used"] is True and report["flow"]["escalation"]["status"] == "dispatched"
+
+        # Blocking again after the planned round, or no usable plan: the owner decides.
+        for verdicts_left, plan_status, labels in (
+            (["BLOCKING"] * 4, "dispatched", 9),
+            (["BLOCKING"] * 3, "failed", 7),
+        ):
+            run, seen = escalation_run(list(verdicts_left), plan_status)
+            with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), mock.patch(
+                "book_dev_ai_dispatch.open_pull_request"
+            ) as pr:
+                report = dispatch(**codex, **models)
+            assert report["status"] == "review_blocked" and len(seen) == labels, (report["status"], [s["label"] for s in seen])
+            pr.assert_not_called()
+
+        # BOOK_DEV_ESCALATE=none stops at the owner after the builder's own rounds.
+        run, seen = escalation_run(["BLOCKING"] * 3)
+        with mock.patch.dict(os.environ, {"BOOK_DEV_ESCALATE": "none"}), mock.patch(
+            "book_dev_ai_dispatch.run_provider", side_effect=run
+        ):
+            report = dispatch(**codex, **models)
+        assert report["status"] == "review_blocked" and "claude-plan" not in [s["label"] for s in seen]
 
         # A Codex build that edits nothing still ends as no_changes.
         calls.clear()
