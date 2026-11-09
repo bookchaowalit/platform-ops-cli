@@ -466,6 +466,23 @@ def build_review_tests(tmp: Path) -> None:
     assert done.returncode == 0 and done.stdout.strip() == "started"
     time.sleep(2)
     assert not marker.exists(), "the background child was killed with the group"
+    # A double-forked daemon that left the group with setsid is still killed: the dispatcher is
+    # its subreaper (without that it is reparented to init and survives).
+    escaped = tmp / "escaped.txt"
+    daemon = tmp / "daemonize.py"
+    daemon.write_text(
+        "import os, sys, time\n"
+        "if os.fork(): os._exit(0)\n"
+        "os.setsid()\n"
+        "if os.fork(): os._exit(0)\n"
+        "fd = os.open(os.devnull, os.O_RDWR)\n"
+        "[os.dup2(fd, n) for n in (0, 1, 2)]\n"
+        "time.sleep(1)\n"
+        "open(sys.argv[1], 'w').write('escaped')\n"
+    )
+    _run_process([sys.executable, str(daemon), str(escaped)], input=None, cwd=str(tmp), env=None, timeout=30)
+    time.sleep(2)
+    assert not escaped.exists(), "a setsid double-fork daemon does not outlive the call"
 
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):

@@ -28,6 +28,7 @@ import re
 import shlex
 import shutil
 import signal
+import time
 import subprocess
 import sys
 import tempfile
@@ -459,25 +460,89 @@ def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
     }
 
 
+def _become_subreaper() -> None:
+    """Orphaned descendants (double fork, setsid) are reparented to this process, not init."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+    except (OSError, AttributeError):
+        pass
+
+
+def _children_of(parents: set[int]) -> set[int]:
+    found = set()
+    for entry in Path("/proc").iterdir() if Path("/proc").is_dir() else ():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue
+        # Field 4 (ppid) follows the parenthesised command name, which may contain spaces.
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) > 1 and int(fields[1]) in parents:
+            found.add(int(entry.name))
+    return found
+
+
+def _kill_descendants() -> None:
+    """Kill everything this dispatcher still has below it, including processes that left the group."""
+    me = os.getpid()
+    for _ in range(10):
+        tree: set[int] = set()
+        frontier = {me}
+        while frontier:
+            frontier = _children_of(frontier) - tree
+            tree |= frontier
+        if not tree:
+            return
+        for pid in tree:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for pid in tree:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+        time.sleep(0.05)
+
+
 def _run_process(
     command: list[str], *, input: str | None, cwd: str, env: dict[str, str] | None, timeout: int
 ) -> subprocess.CompletedProcess[str]:
-    """Run an agent CLI in its own session and kill the whole group when it returns.
+    """Run an agent CLI in its own session and kill everything it started when it returns.
 
     A builder could leave a background process that rewrites the worktree after the
-    dispatcher's checks; nothing it started outlives the call."""
+    dispatcher's checks. The dispatcher is a child subreaper, so even a child that called
+    setsid is reparented here and killed; pipe draining is bounded."""
+    _become_subreaper()
     proc = subprocess.Popen(
         command, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env, text=True, start_new_session=True,
     )
+    timed_out = False
     try:
         stdout, stderr = proc.communicate(input=input, timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
         _kill_group(proc.pid)
-        stdout, stderr = proc.communicate()
-        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
+        _kill_descendants()
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe:
+                    pipe.close()
+            proc.wait(timeout=10)
+            stdout, stderr = "", ""
     finally:
         _kill_group(proc.pid)
+        _kill_descendants()
+    if timed_out:
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
@@ -662,17 +727,17 @@ SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 TRUSTED_FILTER_RE = re.compile(r"(git-lfs) (clean -- %f|smudge -- %f|filter-process)")
 
 
-def untrusted_filters(worktree: Path) -> list[str]:
+def untrusted_filters(worktree: Path, *git_args: str) -> list[str]:
     """Configured git filter drivers other than the standard git-lfs commands.
 
     A filter defined in repo or user config may call a script inside the checkout, which the
     builder can edit; the dispatcher's `git add` would then run builder code unsandboxed. The
     whole command must match (git runs it through a shell, so `git-lfs clean; ./x` is not lfs)."""
-    found = _git(worktree, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$")
+    found = _git(worktree, *git_args, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$")
     if found.returncode not in (0, 1):
         return ["<git config failed>"]
-    repo_root = Path(_git(worktree, "rev-parse", "--show-toplevel").stdout.strip() or worktree).resolve()
-    git_dir = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip() or repo_root).resolve()
+    repo_root = Path(_git(worktree, *git_args, "rev-parse", "--show-toplevel").stdout.strip() or worktree).resolve()
+    git_dir = Path(_git(worktree, *git_args, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip() or repo_root).resolve()
     bad = []
     for line in found.stdout.splitlines():
         key, _, command = line.partition(" ")
@@ -890,7 +955,7 @@ def build_review(
         if not pointer_intact():
             result.update(status="failed", error="builder changed the worktree .git pointer")
             return result
-        if result["status"] == "dispatched" and not builder_commits and untrusted_filters(repo_dir):
+        if result["status"] == "dispatched" and not builder_commits and untrusted_filters(worktree, *pinned):
             result.update(status="failed", error="git filters appeared during the build")
             return result
         if result["status"] == "dispatched" and not builder_commits and dirty():

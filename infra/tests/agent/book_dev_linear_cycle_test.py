@@ -7,7 +7,6 @@ import json
 import subprocess
 import sys
 import tempfile
-import types
 from pathlib import Path
 from unittest import mock
 
@@ -34,8 +33,8 @@ def issue(identifier: str, title: str, *, priority: int = 2, labels: tuple[str, 
 def provider_run(result: mock.Mock) -> mock._patch:
     """Mock provider processes only; git status calls in the loop stay real."""
 
-    fake = types.SimpleNamespace(run=mock.Mock(return_value=result), TimeoutExpired=subprocess.TimeoutExpired)
-    return mock.patch("book_dev_ai_dispatch.subprocess", fake)
+    # Provider CLIs go through _run_process (own session, process-group kill).
+    return mock.patch("book_dev_ai_dispatch._run_process", return_value=result)
 
 
 def make_repo(root: Path, owner: str, name: str) -> Path:
@@ -112,7 +111,7 @@ def main() -> int:
             with provider_run(completed) as fake:
                 report = cycle.run_cycle(dry_run=False, **common)
                 assert report["dispatch_status"] == "dispatched", report
-                assert fake.run.call_args.kwargs["cwd"] == str((root / "github/owner/public/repo-a").resolve())
+                assert fake.call_args.kwargs["cwd"] == str((root / "github/owner/public/repo-a").resolve())
             state = json.loads((tmp / "state" / "state.json").read_text(encoding="utf-8"))
             assert [item["issue"] for item in state["dispatched"]] == ["BOO-1"]
 
