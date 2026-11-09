@@ -74,9 +74,12 @@ Mode `plan` ไม่ผ่านรีวิวเพราะไม่มี�
 ```sh
 BOOK_DEV_LINEAR_LABEL=ai-dispatch
 BOOK_DEV_LINEAR_HOLD_LABELS=รอเจ้าของ,ติดเงื่อนไข
-BOOK_DEV_DISPATCH_PROVIDERS=claude
+BOOK_DEV_DISPATCH_PROVIDERS=codex        # ค่าบนเครื่องเจ้าของตั้งแต่ 2026-11-09 (เดิม claude)
 BOOK_DEV_DISPATCH_REVIEWER=codex
+BOOK_DEV_BUILDER_MODEL=gpt-6-luna
+BOOK_DEV_REVIEWER_MODEL=gpt-6.1-sol
 BOOK_DEV_DISPATCH_MODE=implement
+INFISICAL_CLI_ENABLED=1                  # ให้ timer ดึง LINEAR_API_KEY จาก Infisical /linear ผ่าน CLI ที่ login แล้ว
 ```
 
 ## คำสั่ง
