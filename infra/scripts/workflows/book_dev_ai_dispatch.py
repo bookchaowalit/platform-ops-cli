@@ -83,12 +83,15 @@ SECRET_CONTENT_RE = re.compile(
     r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bglpat-[\w-]{20,}"
     r"|\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}|\blin_api_[A-Za-z0-9]{20,}|\bnpm_[A-Za-z0-9]{30,}"
     r"|\b[rs]k_live_[A-Za-z0-9]{20,}|\bAIza[0-9A-Za-z_-]{35}|\b\d{8,10}:AA[A-Za-z0-9_-]{30,}|\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
+    # URLs with an embedded password (scheme://user:password@host), e.g. a dotenv DATABASE_URL
+    r"|\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@]{1,64}:[^/\s@]{6,128}@[\w.-]+"
     # dotenv-style assignment of a literal to a credential-named key (KEY=value at line start)
     r"|(?m:^[ \t]*(?:export[ \t]+)?[A-Z0-9_]{0,64}(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]{0,64}[ \t]*=[ \t]*['\"]?[A-Za-z0-9_+/.~:-]{16,})"
 )
 SECRET_FILE_RE = re.compile(
-    r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|[\w.-]+\.env|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
-    r"|id_(rsa|dsa|ecdsa|ed25519)[\w.-]*|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.?credentials\.json)$",
+    # Basenames may hold any character but "/" (spaces included: "client certificate.p12").
+    r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[^/]+)?|[^/]+\.env|[^/]*\.(pem|key|p12|pfx|keystore|jks)"
+    r"|id_(rsa|dsa|ecdsa|ed25519)[^/]*|\.netrc|\.git-credentials|\.npmrc|\.pypirc|[^/]*credentials\.json)$",
     re.IGNORECASE,
 )
 BUILDER_MODEL_ENV = "BOOK_DEV_BUILDER_MODEL"
@@ -782,6 +785,18 @@ def untrusted_filters(worktree: Path, *git_args: str) -> list[str]:
     found = _git(worktree, *git_args, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$")
     if found.returncode not in (0, 1):
         return ["<git config failed>"]
+    # git-lfs runs lfs.extension.<name>.clean/smudge programs itself, so any extension is refused;
+    # .lfsconfig in the (builder-writable) tree is refused when it names one too.
+    extensions = _git(worktree, *git_args, "config", "--get-regexp", r"^lfs\.extension\.")
+    if extensions.returncode not in (0, 1):
+        return ["<git config failed>"]
+    bad_ext = [line.partition(" ")[0] for line in extensions.stdout.splitlines() if line.strip()]
+    try:
+        lfsconfig = (worktree / ".lfsconfig").read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        lfsconfig = ""
+    if "extension" in lfsconfig:
+        bad_ext.append(".lfsconfig extension")
     repo_root = Path(_git(worktree, *git_args, "rev-parse", "--show-toplevel").stdout.strip() or worktree).resolve()
     git_dir = Path(_git(worktree, *git_args, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip() or repo_root).resolve()
     bad = []
@@ -795,7 +810,7 @@ def untrusted_filters(worktree: Path, *git_args: str) -> list[str]:
             or any(root == resolved or root in resolved.parents for root in (repo_root, git_dir))
         ):
             bad.append(key)
-    return bad
+    return bad + bad_ext
 
 
 def _trusted_cli(command: list[str] | None) -> bool:

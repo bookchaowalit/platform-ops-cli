@@ -409,6 +409,11 @@ def build_review_tests(tmp: Path) -> None:
     assert secret_findings(scan, start, sha()) == ["ไฟล์ x.txt"]
     commit(".env", b"A=1\n")
     assert ".env" in secret_findings(scan, start, sha())
+    start = sha()
+    commit("client certificate.p12", b"\x30\x82binary")
+    commit("prod credentials.env", b"DB=1\n")
+    commit("conf.txt", b"DATABASE_URL=postgres://app:s3cretpass@db.internal:5432/x\n")
+    assert secret_findings(scan, start, sha()) == ["client certificate.p12", "prod credentials.env", "conf.txt"]
     assert secret_findings(scan, start, start) == []
     # The env files this setup uses, Linear tokens and dotenv assignments; submodule gitlinks are not blobs.
     start = sha()
@@ -466,6 +471,13 @@ def build_review_tests(tmp: Path) -> None:
     with mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}):
         assert untrusted_filters(scan) == ["filter.lfs.clean"], "a git-lfs inside the repository is not trusted"
     subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.lfs.clean"], check=True)
+    # LFS extensions run their own programs: refused, from git config or from .lfsconfig in the tree.
+    subprocess.run(["git", "-C", str(scan), "config", "lfs.extension.x.clean", "./scripts/clean"], check=True)
+    assert untrusted_filters(scan) == ["lfs.extension.x.clean"], untrusted_filters(scan)
+    subprocess.run(["git", "-C", str(scan), "config", "--remove-section", "lfs.extension.x"], check=True)
+    (scan / ".lfsconfig").write_text('[lfs "extension.y"]\n\tclean = ./c\n')
+    assert untrusted_filters(scan) == [".lfsconfig extension"]
+    (scan / ".lfsconfig").unlink()
     # Long uppercase lines do not make the dotenv pattern backtrack for long.
     import time
     from book_dev_ai_dispatch import SECRET_CONTENT_BYTES_RE
