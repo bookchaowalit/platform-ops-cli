@@ -422,6 +422,9 @@ def build_review_tests(tmp: Path) -> None:
         assert secret_findings(scan, start, sha()) == [SECRET_SCAN_FAILED], "a failed scan blocks"
 
     # Git filters the dispatcher's `git add` would run: only git-lfs is trusted.
+    # Runner images configure git-lfs globally; these checks see repository config only.
+    no_global = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+    no_global.start()
     from book_dev_ai_dispatch import untrusted_filters
     assert untrusted_filters(scan) == []
     subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
@@ -434,10 +437,10 @@ def build_review_tests(tmp: Path) -> None:
     subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.x.clean"], check=True)
     # Basenames, shell suffixes and repository-local programs do not pass as git-lfs.
     for i, command in enumerate(("./scripts/git-lfs clean -- %f", "git-lfs clean -- %f; ./evil.sh",
-                                 "git lfs smudge -- %f && curl x", "git-lfs clean -- %f $(./x)")):
+                                 "git lfs smudge -- %f && curl x", "git-lfs clean -- %f $(./x)", "git lfs clean -- %f")):
         subprocess.run(["git", "-C", str(scan), "config", f"filter.y{i}.clean", command], check=True)
-    assert untrusted_filters(scan) == [f"filter.y{i}.clean" for i in range(4)], untrusted_filters(scan)
-    for i in range(4):
+    assert untrusted_filters(scan) == [f"filter.y{i}.clean" for i in range(5)], untrusted_filters(scan)
+    for i in range(5):
         subprocess.run(["git", "-C", str(scan), "config", "--unset", f"filter.y{i}.clean"], check=True)
     bin_dir = scan / "bin"
     bin_dir.mkdir()
@@ -453,6 +456,16 @@ def build_review_tests(tmp: Path) -> None:
     began = time.monotonic()
     SECRET_CONTENT_BYTES_RE.search(b"A" * 200_000 + b"\n")
     assert time.monotonic() - began < 2, "bounded quantifiers"
+    no_global.stop()
+
+    # Nothing a builder starts outlives the provider call.
+    from book_dev_ai_dispatch import _run_process
+    marker = tmp / "late.txt"
+    done = _run_process(["sh", "-c", f"(sleep 1; touch {marker}) >/dev/null 2>&1 & echo started"],
+                        input=None, cwd=str(tmp), env=None, timeout=30)
+    assert done.returncode == 0 and done.stdout.strip() == "started"
+    time.sleep(2)
+    assert not marker.exists(), "the background child was killed with the group"
 
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):
@@ -594,7 +607,7 @@ def main() -> int:
             assert command[command.index("--add-dir") + 1] == str(tmp / "exec")
             completed = mock.Mock(returncode=0, stdout="done", stderr="")
             (tmp / "dispatch" / "x").mkdir(parents=True)
-            with mock.patch("book_dev_ai_dispatch.subprocess.run", return_value=completed) as run:
+            with mock.patch("book_dev_ai_dispatch._run_process", return_value=completed) as run:
                 result = run_provider(
                     "claude",
                     prompt="p",

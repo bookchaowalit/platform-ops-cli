@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -458,6 +459,35 @@ def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
     }
 
 
+def _run_process(
+    command: list[str], *, input: str | None, cwd: str, env: dict[str, str] | None, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run an agent CLI in its own session and kill the whole group when it returns.
+
+    A builder could leave a background process that rewrites the worktree after the
+    dispatcher's checks; nothing it started outlives the call."""
+    proc = subprocess.Popen(
+        command, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, env=env, text=True, start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc.pid)
+        stdout, stderr = proc.communicate()
+        raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
+    finally:
+        _kill_group(proc.pid)
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def _kill_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_provider(
     provider: str,
     *,
@@ -516,15 +546,8 @@ def run_provider(
 
     stdin_data = prompt if provider in {"codex", "claude"} else None
     try:
-        completed = subprocess.run(
-            command,
-            input=stdin_data,
-            cwd=str(cwd),
-            env=provider_env(provider, guard),
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
+        completed = _run_process(
+            command, input=stdin_data, cwd=str(cwd), env=provider_env(provider, guard), timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
@@ -636,7 +659,7 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
 SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 # Clean/smudge filters run on `git add`/`git status` through a shell. Only the exact commands
 # `git lfs install` writes are trusted, run by a program resolved from PATH outside the repository.
-TRUSTED_FILTER_RE = re.compile(r"(git-lfs|git lfs) (clean|smudge|filter-process)( -- %f)?")
+TRUSTED_FILTER_RE = re.compile(r"(git-lfs) (clean -- %f|smudge -- %f|filter-process)")
 
 
 def untrusted_filters(worktree: Path) -> list[str]:
@@ -654,7 +677,7 @@ def untrusted_filters(worktree: Path) -> list[str]:
     for line in found.stdout.splitlines():
         key, _, command = line.partition(" ")
         match = TRUSTED_FILTER_RE.fullmatch(command.strip())
-        program = shutil.which(match.group(1).split()[0]) if match else None
+        program = shutil.which(match.group(1)) if match else None
         resolved = Path(program).resolve() if program else None
         if (
             not match or not resolved or not Path(program).is_absolute()
@@ -840,6 +863,15 @@ def build_review(
     # The `.git` file lives in the builder's tree: a swapped one would point every later
     # dispatcher git call (add, commit, push) at a gitdir with the builder's config.
     git_pointer = (worktree / ".git").read_bytes()
+    # Every later dispatcher git call names the gitdir it recorded here, so the builder-writable
+    # `.git` file is never consulted (a background change after the check cannot redirect it).
+    gitdir = Path(_git(repo_dir, "-C", str(worktree), "rev-parse", "--path-format=absolute", "--git-dir").stdout.strip())
+    if not gitdir.is_dir():
+        return "failed", results, {**flow, "error": "could not resolve the worktree gitdir"}
+    pinned = (f"--git-dir={gitdir}", f"--work-tree={worktree}")
+
+    def wt(*args: str) -> subprocess.CompletedProcess[str]:
+        return _git(worktree, *pinned, *args)
 
     def pointer_intact() -> bool:
         link = worktree / ".git"
@@ -858,12 +890,12 @@ def build_review(
         if not pointer_intact():
             result.update(status="failed", error="builder changed the worktree .git pointer")
             return result
-        if result["status"] == "dispatched" and not builder_commits and untrusted_filters(worktree):
+        if result["status"] == "dispatched" and not builder_commits and untrusted_filters(repo_dir):
             result.update(status="failed", error="git filters appeared during the build")
             return result
         if result["status"] == "dispatched" and not builder_commits and dirty():
             # The sandboxed builder cannot write the gitdir; commit its edits with hooks off.
-            added = _git(worktree, *SAFE_GIT, "add", "-A")
+            added = wt(*SAFE_GIT, "add", "-A")
             committed = added if added.returncode != 0 else _git(
                 worktree, *SAFE_GIT, "commit", "-q", "--no-verify", "-m", f"{label}: {title}"
             )
@@ -872,14 +904,14 @@ def build_review(
         return result
 
     def dirty() -> bool:
-        return bool(_git(worktree, *SAFE_GIT, "status", "--porcelain").stdout.strip())
+        return bool(wt(*SAFE_GIT, "status", "--porcelain").stdout.strip())
 
     def untouched() -> bool:
         """Discard the worktree only when it has no commits and no edits; else keep it."""
         if not pointer_intact():
             return False  # never run git through a swapped pointer; the owner inspects it
-        commits = _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip()
-        dirty = _git(worktree, *SAFE_GIT, "status", "--porcelain").stdout.strip()
+        commits = wt("rev-list", f"{base}..HEAD").stdout.strip()
+        dirty = wt(*SAFE_GIT, "status", "--porcelain").stdout.strip()
         if commits or dirty:
             return False
         _git(repo_dir, "worktree", "remove", str(worktree))
@@ -890,7 +922,7 @@ def build_review(
     if result["status"] != "dispatched":
         flow["worktree_kept"] = not untouched()
         return result["status"], results, flow
-    if not _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip():
+    if not wt("rev-list", f"{base}..HEAD").stdout.strip():
         if untouched():
             return "no_changes", results, flow
         flow["worktree_kept"] = True
@@ -902,17 +934,17 @@ def build_review(
         if dirty():
             flow["worktree_kept"] = True
             return "uncommitted_changes", results, flow
-        head = _git(worktree, "rev-parse", "--verify", "-q", "HEAD").stdout.strip()
-        if _git(worktree, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip() != branch:
+        head = wt("rev-parse", "--verify", "-q", "HEAD").stdout.strip()
+        if wt("symbolic-ref", "-q", "--short", "HEAD").stdout.strip() != branch:
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"builder left branch {branch}"}
-        if _git(worktree, "merge-base", "--is-ancestor", base, head).returncode != 0:
+        if wt("merge-base", "--is-ancestor", base, head).returncode != 0:
             # An amend or rebase past the base would make the reviewed base..head diff differ from the PR.
             flow["worktree_kept"] = True
             return "failed", results, {**flow, "error": f"branch no longer descends from {base[:12]}"}
-        changed = [path for path in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
+        changed = [path for path in wt("diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if path]
         flow["agent_instruction_files"] = [path for path in changed if AGENT_INSTRUCTION_RE.search(path)]
-        flow["secret_findings"] = secret_findings(worktree, base, head)
+        flow["secret_findings"] = secret_findings(repo_dir, base, head)
         if flow["secret_findings"]:
             # Nothing that looks like a credential goes to the reviewer, the remote or a PR.
             flow["worktree_kept"] = True
@@ -970,7 +1002,7 @@ def build_review(
             flow["worktree_kept"] = True
             return results[-1]["status"], results, flow
 
-    if _git(worktree, "rev-parse", f"refs/heads/{branch}").stdout.strip() != head:
+    if wt("rev-parse", f"refs/heads/{branch}").stdout.strip() != head:
         flow["worktree_kept"] = True
         return "failed", results, {**flow, "error": "branch moved after the passing review"}
 
@@ -985,7 +1017,7 @@ def build_review(
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
     )
     flow["pull_request"] = open_pull_request(
-        worktree, branch=branch, base_branch=base_branch, head=head, title=title, body=body
+        repo_dir, branch=branch, base_branch=base_branch, head=head, title=title, body=body
     )
     if flow["pull_request"]["status"] != "opened":
         return "failed", results, flow
