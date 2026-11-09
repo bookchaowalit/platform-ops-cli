@@ -299,7 +299,7 @@ def build_review_tests(tmp: Path) -> None:
         assert report["flow"]["same_family"] is True
         # No user config, MCP servers, plugins or app connectors in either Codex role.
         for cmd in (build_cmd, review_cmd):
-            assert "--ignore-user-config" in cmd and "mcp_servers={}" in cmd, cmd
+            assert "--ignore-user-config" in cmd and "--ignore-rules" in cmd and "mcp_servers={}" in cmd, cmd
             assert 'web_search="disabled"' in cmd, cmd
             assert cmd[cmd.index("apps") - 1] == "--disable" and cmd[cmd.index("plugins") - 1] == "--disable"
         assert report["flow"]["builder_model"] == "gpt-6-luna"
@@ -379,6 +379,20 @@ def build_review_tests(tmp: Path) -> None:
     commit(".env", b"A=1\n")
     assert ".env" in secret_findings(scan, start, sha())
     assert secret_findings(scan, start, start) == []
+    # The env files this setup uses, Linear tokens and dotenv assignments; submodule gitlinks are not blobs.
+    start = sha()
+    commit("book-dev-dispatch.env", b"BOOK_DEV_DISPATCH_MODE=implement\n")
+    commit("cfg.txt", b"LINEAR_API_KEY=lin_api_" + b"C" * 40 + b"\n")
+    commit("settings.ini", b"export SERVICE_TOKEN='abcdefghijklmnopqrstuvwxyz012345'\n")
+    commit("app2.py", b"API_KEY = os.environ.get('API_KEY')\n")  # reads the env: not a literal credential
+    assert secret_findings(scan, start, sha()) == ["book-dev-dispatch.env", "cfg.txt", "settings.ini"]
+    start = sha()
+    sub_sha = sha()
+    subprocess.run(["git", "-C", str(scan), "update-index", "--add", "--cacheinfo", f"160000,{sub_sha},vendor/lib"], check=True)
+    (scan / ".gitmodules").write_text('[submodule "vendor/lib"]\n\tpath = vendor/lib\n\turl = https://example.com/lib.git\n')
+    subprocess.run(["git", "-C", str(scan), "add", ".gitmodules"], check=True)
+    subprocess.run(["git", "-C", str(scan), "commit", "-q", "-m", "submodule"], check=True)
+    assert secret_findings(scan, start, sha()) == [], "a gitlink is skipped, not a scan failure"
     # A parentless commit merged in (unrelated history) is diffed against the empty tree.
     start = sha()
     subprocess.run(["git", "-C", str(scan), "checkout", "-q", "--orphan", "side"], check=True)
@@ -391,6 +405,14 @@ def build_review_tests(tmp: Path) -> None:
     with mock.patch("book_dev_ai_dispatch._git_bytes",
                     return_value=subprocess.CompletedProcess([], 124, b"", b"timed out")):
         assert secret_findings(scan, start, sha()) == [SECRET_SCAN_FAILED], "a failed scan blocks"
+
+    # Git filters the dispatcher's `git add` would run: only git-lfs is trusted.
+    from book_dev_ai_dispatch import untrusted_filters
+    assert untrusted_filters(scan) == []
+    subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
+    assert untrusted_filters(scan) == []
+    subprocess.run(["git", "-C", str(scan), "config", "filter.x.clean", "./scripts/clean.sh"], check=True)
+    assert untrusted_filters(scan) == ["filter.x.clean"]
 
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):

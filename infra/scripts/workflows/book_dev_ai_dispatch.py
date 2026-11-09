@@ -66,7 +66,7 @@ DISPATCHER_COMMITS = {"codex"}
 # Codex in the build-review flow loads no user config, MCP servers, plugins or app
 # connectors: those act outside the sandbox (open a PR, deploy) before the review gate.
 CODEX_ISOLATION = (
-    "--ignore-user-config", "-c", "mcp_servers={}", "-c", 'web_search="disabled"',  # a query could carry data out
+    "--ignore-user-config", "--ignore-rules", "-c", "mcp_servers={}", "-c", 'web_search="disabled"',  # a query could carry data out
     *(arg for feature in ("apps", "plugins", "remote_plugin", "browser_use", "computer_use", "in_app_browser",
                           "image_generation", "multi_agent") for arg in ("--disable", feature)),
 )
@@ -79,10 +79,13 @@ PROVIDER_AUTH_ENV = {
 SECRET_CONTENT_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_\w{20,}|\bsk-ant-[\w-]{20,}"
     r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bglpat-[\w-]{20,}"
-    r"|\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}"
+    r"|\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}|\blin_api_[A-Za-z0-9]{20,}|\bnpm_[A-Za-z0-9]{30,}"
+    r"|\b[rs]k_live_[A-Za-z0-9]{20,}|\bAIza[0-9A-Za-z_-]{35}|\b\d{8,10}:AA[A-Za-z0-9_-]{30,}|\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
+    # dotenv-style assignment of a literal to a credential-named key (KEY=value at line start)
+    r"|(?m:^[ \t]*(?:export[ \t]+)?[A-Z0-9_]*(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*['\"]?[A-Za-z0-9_+/.~:-]{16,})"
 )
 SECRET_FILE_RE = re.compile(
-    r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
+    r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|[\w.-]+\.env|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
     r"|id_(rsa|dsa|ecdsa|ed25519)[\w.-]*|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.?credentials\.json)$",
     re.IGNORECASE,
 )
@@ -594,13 +597,22 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
         return [SECRET_SCAN_FAILED]
     hits: list[str] = []
     for sha in shas:
-        listed = _git_bytes(worktree, "diff-tree", "--root", "-r", "-m", "-z", "--no-commit-id", "--name-only",
+        listed = _git_bytes(worktree, "diff-tree", "--root", "-r", "-m", "-z", "--no-commit-id",
                             "--diff-filter=ACMRT", "--no-renames", sha)
         if listed.returncode != 0:
             return [SECRET_SCAN_FAILED]
-        for raw in listed.stdout.split(b"\0"):
-            if not raw:
-                continue
+        fields = listed.stdout.split(b"\0")
+        if fields and not fields[-1]:
+            fields.pop()
+        if len(fields) % 2:
+            return [SECRET_SCAN_FAILED]
+        for meta, raw in zip(fields[0::2], fields[1::2]):
+            # Raw record ":<old mode> <new mode> <old sha> <new sha> <status>", then the path.
+            parts = meta.split()
+            if not meta.startswith(b":") or len(parts) < 5:
+                return [SECRET_SCAN_FAILED]
+            if parts[1] == b"160000":
+                continue  # submodule gitlink: a commit id, not file content (.gitmodules is still scanned)
             path = os.fsdecode(raw)
             if path in hits:
                 continue
@@ -618,6 +630,32 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
             if SECRET_CONTENT_BYTES_RE.search(blob.stdout):
                 hits.append(path)
     return hits
+
+
+# Dispatcher-run index commands on the builder's tree run no hooks and no fsmonitor program.
+SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+# Clean/smudge filters run on `git add`/`git status`; only these well-known installed programs are trusted.
+TRUSTED_FILTER_PROGRAMS = {"git-lfs"}
+
+
+def untrusted_filters(worktree: Path) -> list[str]:
+    """Configured git filter drivers whose command is not a trusted installed program.
+
+    A filter defined in repo or user config may call a script inside the checkout, which the
+    builder can edit; the dispatcher's `git add` would then run builder code unsandboxed."""
+    found = _git(worktree, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$")
+    if found.returncode not in (0, 1):
+        return ["<git config failed>"]
+    bad = []
+    for line in found.stdout.splitlines():
+        key, _, command = line.partition(" ")
+        words = command.split()
+        program = Path(words[0]).name if words else ""
+        if program == "git" and len(words) > 1 and words[1] == "lfs":
+            continue
+        if program not in TRUSTED_FILTER_PROGRAMS:
+            bad.append(key)
+    return bad
 
 
 def _trusted_cli(command: list[str] | None) -> bool:
@@ -784,6 +822,11 @@ def build_review(
     if not base:
         return "failed", results, {**flow, "error": f"origin/{base_branch} not found"}
     flow["base"] = base
+    if not builder_commits:
+        filters = untrusted_filters(repo_dir)
+        if filters:
+            # The dispatcher's `git add` would run these with its own env and network.
+            return "failed", results, {**flow, "error": f"repository config defines untrusted git filters: {', '.join(filters)}"}
     worktree.parent.mkdir(parents=True, exist_ok=True)
     added = _git(repo_dir, "worktree", "add", "-b", branch, str(worktree), base)
     if added.returncode != 0:
@@ -801,22 +844,21 @@ def build_review(
         results.append(result)
         if result["status"] == "dispatched" and not builder_commits and dirty():
             # The sandboxed builder cannot write the gitdir; commit its edits with hooks off.
-            nohooks = ("-c", "core.hooksPath=/dev/null")
-            added = _git(worktree, *nohooks, "add", "-A")
+            added = _git(worktree, *SAFE_GIT, "add", "-A")
             committed = added if added.returncode != 0 else _git(
-                worktree, *nohooks, "commit", "-q", "--no-verify", "-m", f"{label}: {title}"
+                worktree, *SAFE_GIT, "commit", "-q", "--no-verify", "-m", f"{label}: {title}"
             )
             if committed.returncode != 0:
                 result.update(status="failed", error=f"dispatcher commit failed: {_clean(committed.stderr, 300)}")
         return result
 
     def dirty() -> bool:
-        return bool(_git(worktree, "status", "--porcelain").stdout.strip())
+        return bool(_git(worktree, *SAFE_GIT, "status", "--porcelain").stdout.strip())
 
     def untouched() -> bool:
         """Discard the worktree only when it has no commits and no edits; else keep it."""
         commits = _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip()
-        dirty = _git(worktree, "status", "--porcelain").stdout.strip()
+        dirty = _git(worktree, *SAFE_GIT, "status", "--porcelain").stdout.strip()
         if commits or dirty:
             return False
         _git(repo_dir, "worktree", "remove", str(worktree))
