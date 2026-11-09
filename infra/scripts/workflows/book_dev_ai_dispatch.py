@@ -82,7 +82,7 @@ SECRET_CONTENT_RE = re.compile(
     r"|\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}|\blin_api_[A-Za-z0-9]{20,}|\bnpm_[A-Za-z0-9]{30,}"
     r"|\b[rs]k_live_[A-Za-z0-9]{20,}|\bAIza[0-9A-Za-z_-]{35}|\b\d{8,10}:AA[A-Za-z0-9_-]{30,}|\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
     # dotenv-style assignment of a literal to a credential-named key (KEY=value at line start)
-    r"|(?m:^[ \t]*(?:export[ \t]+)?[A-Z0-9_]*(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]*[ \t]*=[ \t]*['\"]?[A-Za-z0-9_+/.~:-]{16,})"
+    r"|(?m:^[ \t]*(?:export[ \t]+)?[A-Z0-9_]{0,64}(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]{0,64}[ \t]*=[ \t]*['\"]?[A-Za-z0-9_+/.~:-]{16,})"
 )
 SECRET_FILE_RE = re.compile(
     r"(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w.-]+)?|[\w.-]+\.env|[\w.-]*\.(pem|key|p12|pfx|keystore|jks)"
@@ -634,26 +634,32 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
 
 # Dispatcher-run index commands on the builder's tree run no hooks and no fsmonitor program.
 SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
-# Clean/smudge filters run on `git add`/`git status`; only these well-known installed programs are trusted.
-TRUSTED_FILTER_PROGRAMS = {"git-lfs"}
+# Clean/smudge filters run on `git add`/`git status` through a shell. Only the exact commands
+# `git lfs install` writes are trusted, run by a program resolved from PATH outside the repository.
+TRUSTED_FILTER_RE = re.compile(r"(git-lfs|git lfs) (clean|smudge|filter-process)( -- %f)?")
 
 
 def untrusted_filters(worktree: Path) -> list[str]:
-    """Configured git filter drivers whose command is not a trusted installed program.
+    """Configured git filter drivers other than the standard git-lfs commands.
 
     A filter defined in repo or user config may call a script inside the checkout, which the
-    builder can edit; the dispatcher's `git add` would then run builder code unsandboxed."""
+    builder can edit; the dispatcher's `git add` would then run builder code unsandboxed. The
+    whole command must match (git runs it through a shell, so `git-lfs clean; ./x` is not lfs)."""
     found = _git(worktree, "config", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$")
     if found.returncode not in (0, 1):
         return ["<git config failed>"]
+    repo_root = Path(_git(worktree, "rev-parse", "--show-toplevel").stdout.strip() or worktree).resolve()
+    git_dir = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip() or repo_root).resolve()
     bad = []
     for line in found.stdout.splitlines():
         key, _, command = line.partition(" ")
-        words = command.split()
-        program = Path(words[0]).name if words else ""
-        if program == "git" and len(words) > 1 and words[1] == "lfs":
-            continue
-        if program not in TRUSTED_FILTER_PROGRAMS:
+        match = TRUSTED_FILTER_RE.fullmatch(command.strip())
+        program = shutil.which(match.group(1).split()[0]) if match else None
+        resolved = Path(program).resolve() if program else None
+        if (
+            not match or not resolved or not Path(program).is_absolute()
+            or any(root == resolved or root in resolved.parents for root in (repo_root, git_dir))
+        ):
             bad.append(key)
     return bad
 
@@ -831,6 +837,13 @@ def build_review(
     added = _git(repo_dir, "worktree", "add", "-b", branch, str(worktree), base)
     if added.returncode != 0:
         return "failed", results, {**flow, "error": _clean(added.stderr, 400)}
+    # The `.git` file lives in the builder's tree: a swapped one would point every later
+    # dispatcher git call (add, commit, push) at a gitdir with the builder's config.
+    git_pointer = (worktree / ".git").read_bytes()
+
+    def pointer_intact() -> bool:
+        link = worktree / ".git"
+        return link.is_file() and not link.is_symlink() and link.read_bytes() == git_pointer
 
     def build(round_no: int, review: str | None) -> dict[str, Any]:
         text = prompt if review is None else build_fix_prompt(prompt, review, round_no, builder_commits)
@@ -842,6 +855,12 @@ def build_review(
             cwd=worktree, label=label, guard="branch", model=builder_model, **common,
         )
         results.append(result)
+        if not pointer_intact():
+            result.update(status="failed", error="builder changed the worktree .git pointer")
+            return result
+        if result["status"] == "dispatched" and not builder_commits and untrusted_filters(worktree):
+            result.update(status="failed", error="git filters appeared during the build")
+            return result
         if result["status"] == "dispatched" and not builder_commits and dirty():
             # The sandboxed builder cannot write the gitdir; commit its edits with hooks off.
             added = _git(worktree, *SAFE_GIT, "add", "-A")
@@ -857,6 +876,8 @@ def build_review(
 
     def untouched() -> bool:
         """Discard the worktree only when it has no commits and no edits; else keep it."""
+        if not pointer_intact():
+            return False  # never run git through a swapped pointer; the owner inspects it
         commits = _git(worktree, "rev-list", f"{base}..HEAD").stdout.strip()
         dirty = _git(worktree, *SAFE_GIT, "status", "--porcelain").stdout.strip()
         if commits or dirty:

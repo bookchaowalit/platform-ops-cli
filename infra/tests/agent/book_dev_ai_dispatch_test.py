@@ -350,6 +350,21 @@ def build_review_tests(tmp: Path) -> None:
         assert [c["label"] for c in calls] == ["codex-build"]
         pr.assert_not_called()
 
+        # A builder that repoints the worktree's .git file stops the run before any dispatcher git call.
+        def swap(provider, *, mode, dispatch_dir, cwd, label=None, **_):
+            if mode == "implement":
+                (cwd / "x.txt").write_text("x")
+                (cwd / ".git").write_text("gitdir: /tmp/evil\n")
+            return {"provider": provider, "status": "dispatched", "last_message": str(dispatch_dir / "x")}
+
+        with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=swap), mock.patch(
+            "book_dev_ai_dispatch.open_pull_request"
+        ) as pr:
+            report = dispatch(**codex, **models)
+        assert report["status"] == "failed" and "pointer" in report["results"][-1]["error"], report
+        assert report["flow"]["worktree_kept"] is True
+        pr.assert_not_called()
+
         # A Codex build that edits nothing still ends as no_changes.
         calls.clear()
         with mock.patch("book_dev_ai_dispatch.run_provider",
@@ -410,9 +425,34 @@ def build_review_tests(tmp: Path) -> None:
     from book_dev_ai_dispatch import untrusted_filters
     assert untrusted_filters(scan) == []
     subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
-    assert untrusted_filters(scan) == []
+    real_lfs = mock.patch("book_dev_ai_dispatch.shutil.which", return_value="/usr/bin/git-lfs")
+    with real_lfs, mock.patch.object(Path, "resolve", lambda self, strict=False: Path(os.path.abspath(self))):
+        assert untrusted_filters(scan) == [], "the standard git-lfs command installed outside the repo is trusted"
+    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.lfs.clean"], check=True)
     subprocess.run(["git", "-C", str(scan), "config", "filter.x.clean", "./scripts/clean.sh"], check=True)
     assert untrusted_filters(scan) == ["filter.x.clean"]
+    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.x.clean"], check=True)
+    # Basenames, shell suffixes and repository-local programs do not pass as git-lfs.
+    for i, command in enumerate(("./scripts/git-lfs clean -- %f", "git-lfs clean -- %f; ./evil.sh",
+                                 "git lfs smudge -- %f && curl x", "git-lfs clean -- %f $(./x)")):
+        subprocess.run(["git", "-C", str(scan), "config", f"filter.y{i}.clean", command], check=True)
+    assert untrusted_filters(scan) == [f"filter.y{i}.clean" for i in range(4)], untrusted_filters(scan)
+    for i in range(4):
+        subprocess.run(["git", "-C", str(scan), "config", "--unset", f"filter.y{i}.clean"], check=True)
+    bin_dir = scan / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git-lfs").write_text("#!/bin/sh\n")
+    (bin_dir / "git-lfs").chmod(0o755)
+    subprocess.run(["git", "-C", str(scan), "config", "filter.lfs.clean", "git-lfs clean -- %f"], check=True)
+    with mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}):
+        assert untrusted_filters(scan) == ["filter.lfs.clean"], "a git-lfs inside the repository is not trusted"
+    subprocess.run(["git", "-C", str(scan), "config", "--unset", "filter.lfs.clean"], check=True)
+    # Long uppercase lines do not make the dotenv pattern backtrack for long.
+    import time
+    from book_dev_ai_dispatch import SECRET_CONTENT_BYTES_RE
+    began = time.monotonic()
+    SECRET_CONTENT_BYTES_RE.search(b"A" * 200_000 + b"\n")
+    assert time.monotonic() - began < 2, "bounded quantifiers"
 
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):
