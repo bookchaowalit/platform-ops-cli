@@ -460,14 +460,24 @@ def provider_env(provider: str, guard: str = "branch") -> dict[str, str] | None:
     }
 
 
+class ContainmentError(OSError):
+    """Processes an agent CLI started could not be contained or killed."""
+
+
 def _become_subreaper() -> None:
-    """Orphaned descendants (double fork, setsid) are reparented to this process, not init."""
+    """Orphaned descendants (double fork, setsid) are reparented to this process, not init.
+
+    Fails closed: without it a daemon the builder starts would outlive the call."""
     try:
         import ctypes
 
-        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
-    except (OSError, AttributeError):
-        pass
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+            raise ContainmentError(ctypes.get_errno(), "prctl(PR_SET_CHILD_SUBREAPER) failed")
+    except (AttributeError, OSError) as exc:
+        if isinstance(exc, ContainmentError):
+            raise
+        raise ContainmentError(f"cannot become a child subreaper: {exc}") from None
 
 
 def _children_of(parents: set[int]) -> set[int]:
@@ -486,28 +496,48 @@ def _children_of(parents: set[int]) -> set[int]:
     return found
 
 
+def _descendants() -> set[int]:
+    tree: set[int] = set()
+    frontier = {os.getpid()}
+    while frontier:
+        frontier = _children_of(frontier) - tree
+        tree |= frontier
+    return tree
+
+
 def _kill_descendants() -> None:
-    """Kill everything this dispatcher still has below it, including processes that left the group."""
-    me = os.getpid()
-    for _ in range(10):
-        tree: set[int] = set()
-        frontier = {me}
-        while frontier:
-            frontier = _children_of(frontier) - tree
-            tree |= frontier
-        if not tree:
+    """Freeze, then kill, everything below this dispatcher; raise if anything survives.
+
+    SIGSTOP first, rescanning until the set stops growing, so a fork chain cannot outrun the
+    scan; then SIGKILL the frozen tree and reap it."""
+    for _ in range(20):
+        frozen: set[int] = set()
+        while True:
+            tree = _descendants()
+            fresh = tree - frozen
+            if not fresh:
+                break
+            for pid in fresh:
+                try:
+                    os.kill(pid, signal.SIGSTOP)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            frozen |= fresh
+        if not frozen:
             return
-        for pid in tree:
+        for pid in frozen:
             try:
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        for pid in tree:
+        for pid in frozen:
             try:
-                os.waitpid(pid, os.WNOHANG)
+                os.waitpid(pid, 0)
             except ChildProcessError:
-                pass
+                pass  # not our direct child; it is reparented to us and reaped on a later pass
         time.sleep(0.05)
+    if _descendants():
+        raise ContainmentError("builder processes survived the kill")
 
 
 def _run_process(

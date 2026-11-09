@@ -483,6 +483,23 @@ def build_review_tests(tmp: Path) -> None:
     _run_process([sys.executable, str(daemon), str(escaped)], input=None, cwd=str(tmp), env=None, timeout=30)
     time.sleep(2)
     assert not escaped.exists(), "a setsid double-fork daemon does not outlive the call"
+    # Containment fails closed: no subreaper means no build.
+    from book_dev_ai_dispatch import ContainmentError
+    fake_libc = mock.Mock()
+    fake_libc.prctl.return_value = -1
+    with mock.patch("ctypes.CDLL", return_value=fake_libc):
+        try:
+            _run_process(["true"], input=None, cwd=str(tmp), env=None, timeout=10)
+            raise AssertionError("expected ContainmentError")
+        except ContainmentError:
+            pass
+    (tmp / "contain").mkdir()
+    with mock.patch("book_dev_ai_dispatch._become_subreaper", side_effect=ContainmentError("no subreaper")), \
+            mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["true"]):
+        result = run_provider("codex", prompt="p", prompt_file=tmp / "contain" / "p.md", mode="implement",
+                              max_turns=1, timeout_sec=30, dry_run=False, dispatch_dir=tmp / "contain",
+                              cwd=tmp, guard="branch")
+    assert result["status"] == "failed" and "subreaper" in result["error"], result
 
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):
