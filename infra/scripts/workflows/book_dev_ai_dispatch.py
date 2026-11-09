@@ -566,17 +566,57 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(["git", *args], 124, "", f"git {args[0]} timed out after 120s")
 
 
+SECRET_CONTENT_BYTES_RE = re.compile(SECRET_CONTENT_RE.pattern.encode())
+SECRET_SCAN_MAX_BLOB = 20 * 1024 * 1024
+SECRET_SCAN_MAX_COMMITS = 200
+SECRET_SCAN_FAILED = "<secret scan failed>"
+
+
+def _git_bytes(cwd: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, check=False, timeout=120)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["git", *args], 124, b"", b"timed out")
+
+
 def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
-    """Changed paths that look like credential files or add credential-shaped text (values never returned)."""
-    changed = [p for p in _git(worktree, "diff", "--name-only", "-z", f"{base}..{head}").stdout.split("\0") if p]
-    hits = [p for p in changed if SECRET_FILE_RE.search(p)]
-    current = None
-    diff = _git(worktree, "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--text", "-U0", f"{base}..{head}")
-    for line in diff.stdout.splitlines():
-        if line.startswith("+++ "):
-            current = line[6:] if line.startswith("+++ b/") else None
-        elif line.startswith("+") and current and current not in hits and SECRET_CONTENT_RE.search(line):
-            hits.append(current)
+    """Paths in any commit of base..head that are credential files or hold credential-shaped bytes.
+
+    Every commit is scanned, not only the final diff: the push publishes the whole history, so a
+    token added and later removed still leaks. Paths come from NUL-separated git output and blobs
+    are read as bytes, so neither quoted names, diff-looking content nor binary files steer the scan.
+    A failed or oversized scan returns SECRET_SCAN_FAILED, which blocks the branch. Values are never returned."""
+    commits = _git_bytes(worktree, "rev-list", "--reverse", f"{base}..{head}")
+    if commits.returncode != 0:
+        return [SECRET_SCAN_FAILED]
+    shas = commits.stdout.decode().split()
+    if len(shas) > SECRET_SCAN_MAX_COMMITS:
+        return [SECRET_SCAN_FAILED]
+    hits: list[str] = []
+    for sha in shas:
+        listed = _git_bytes(worktree, "diff-tree", "-r", "-m", "-z", "--no-commit-id", "--name-only",
+                            "--diff-filter=ACMRT", "--no-renames", sha)
+        if listed.returncode != 0:
+            return [SECRET_SCAN_FAILED]
+        for raw in listed.stdout.split(b"\0"):
+            if not raw:
+                continue
+            path = os.fsdecode(raw)
+            if path in hits:
+                continue
+            if SECRET_FILE_RE.search(path):
+                hits.append(path)
+                continue
+            size = _git_bytes(worktree, "cat-file", "-s", f"{sha}:{path}")
+            if size.returncode != 0:
+                return [SECRET_SCAN_FAILED]
+            if int(size.stdout.strip() or 0) > SECRET_SCAN_MAX_BLOB:
+                return [SECRET_SCAN_FAILED]
+            blob = _git_bytes(worktree, "cat-file", "blob", f"{sha}:{path}")
+            if blob.returncode != 0:
+                return [SECRET_SCAN_FAILED]
+            if SECRET_CONTENT_BYTES_RE.search(blob.stdout):
+                hits.append(path)
     return hits
 
 

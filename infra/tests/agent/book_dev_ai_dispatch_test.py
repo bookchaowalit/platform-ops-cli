@@ -357,6 +357,32 @@ def build_review_tests(tmp: Path) -> None:
             report = dispatch(**codex, **models)
         assert report["status"] == "no_changes", report
 
+    # Secret scan: every commit, binary-safe, quoted names, fail-closed.
+    from book_dev_ai_dispatch import SECRET_SCAN_FAILED, secret_findings
+    scan = tmp / "scan"
+    git_repo(scan)
+    def sha() -> str:
+        return subprocess.run(["git", "-C", str(scan), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    def commit(name: str, data: bytes) -> None:
+        (scan / name).write_bytes(data)
+        subprocess.run(["git", "-C", str(scan), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(scan), "commit", "-q", "-m", name], check=True)
+    start = sha()
+    token = b"gh" + b"p_" + b"B" * 36
+    commit("app.py", b"key = '" + token + b"'\n")
+    commit("app.py", b"key = None\n")  # removed again: the history still carries it
+    assert secret_findings(scan, start, sha()) == ["app.py"]
+    start = sha()
+    commit("logo.png", b"\x89PNG\r\n\x1a\n\xff\xfe\x00binary")
+    commit("ไฟล์ x.txt", b"+++ b/fake\n+" + token + b"\n")  # non-ASCII name, diff-looking content
+    assert secret_findings(scan, start, sha()) == ["ไฟล์ x.txt"]
+    commit(".env", b"A=1\n")
+    assert ".env" in secret_findings(scan, start, sha())
+    assert secret_findings(scan, start, start) == []
+    with mock.patch("book_dev_ai_dispatch._git_bytes",
+                    return_value=subprocess.CompletedProcess([], 124, b"", b"timed out")):
+        assert secret_findings(scan, start, sha()) == [SECRET_SCAN_FAILED], "a failed scan blocks"
+
     # npx would run node_modules/.bin/codex from the builder's tree: refused before any worktree exists.
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["/usr/bin/npx", "--yes", "@openai/codex"]):
         report = dispatch(**codex, **models)
