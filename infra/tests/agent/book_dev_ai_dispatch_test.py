@@ -379,6 +379,15 @@ def build_review_tests(tmp: Path) -> None:
     commit(".env", b"A=1\n")
     assert ".env" in secret_findings(scan, start, sha())
     assert secret_findings(scan, start, start) == []
+    # A parentless commit merged in (unrelated history) is diffed against the empty tree.
+    start = sha()
+    subprocess.run(["git", "-C", str(scan), "checkout", "-q", "--orphan", "side"], check=True)
+    subprocess.run(["git", "-C", str(scan), "rm", "-rq", "--cached", "."], check=True)
+    commit("orphan.txt", token + b"\n")
+    commit("orphan.txt", b"clean\n")  # gone before the merge: only the root commit carries it
+    subprocess.run(["git", "-C", str(scan), "checkout", "-q", "-f", "main"], check=True)
+    subprocess.run(["git", "-C", str(scan), "merge", "-q", "--allow-unrelated-histories", "-m", "m", "side"], check=True)
+    assert "orphan.txt" in secret_findings(scan, start, sha())
     with mock.patch("book_dev_ai_dispatch._git_bytes",
                     return_value=subprocess.CompletedProcess([], 124, b"", b"timed out")):
         assert secret_findings(scan, start, sha()) == [SECRET_SCAN_FAILED], "a failed scan blocks"

@@ -594,7 +594,7 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
         return [SECRET_SCAN_FAILED]
     hits: list[str] = []
     for sha in shas:
-        listed = _git_bytes(worktree, "diff-tree", "-r", "-m", "-z", "--no-commit-id", "--name-only",
+        listed = _git_bytes(worktree, "diff-tree", "--root", "-r", "-m", "-z", "--no-commit-id", "--name-only",
                             "--diff-filter=ACMRT", "--no-renames", sha)
         if listed.returncode != 0:
             return [SECRET_SCAN_FAILED]
