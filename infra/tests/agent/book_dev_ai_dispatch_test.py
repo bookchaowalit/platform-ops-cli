@@ -666,14 +666,23 @@ def build_review_tests(tmp: Path) -> None:
 def planner_tests(tmp: Path) -> None:
     from book_dev_ai_dispatch import integrate, parse_plan, subtask_ticket, validate_plan
 
-    # Plan parsing: the last ```json block; ids, specs and disjoint relative paths are required.
-    good = {"subtasks": [{"id": "api", "title": "API", "spec": "add GET /x", "acceptance": "test passes",
-                          "paths": ["src/api/", "tests/test_api.py"]},
-                         {"id": "ui", "title": "UI", "spec": "show x", "acceptance": "renders", "paths": ["web/x.tsx"]}]}
+    # Plan parsing: the last ```json block; every subtask is a full brief with disjoint relative paths.
+    def brief(sid: str, title: str, paths: list[str], step: str) -> dict:
+        return {"id": sid, "title": title, "goal": f"{title} works for the list page",
+                "context": [f"{paths[0]}:1 is where {sid} lives; tests follow tests/test_api.py style"],
+                "paths": paths, "out_of_scope": ["the database schema"], "interfaces": ["GET /x returns {\"items\": []}"],
+                "tests_first": [f"test_{sid} asserts {step}"], "steps": [step], "edge_cases": ["empty list", "<div> markup"],
+                "acceptance": [f"{step} is covered by a passing test"],
+                "verify": [{"command": "python -m pytest -q", "expect": "all tests pass"}],
+                "stop_when": ["a change outside paths is needed"]}
+
+    good = {"subtasks": [brief("api", "API", ["src/api/", "tests/test_api.py"], "add GET /x"),
+                         brief("ui", "UI", ["web/x.tsx"], "show x")]}
     text = "thinking\n```json\n{\"subtasks\": []}\n```\nfinal:\n```json\n" + json.dumps(good) + "\n```\n"
     plan = parse_plan(text)
     assert plan and [t["id"] for t in plan] == ["api", "ui"], plan
-    assert parse_plan("no json") is None
+    problems: list[str] = []
+    assert parse_plan("no json", problems) is None and "json" in problems[0]
     for bad_paths in (["src/api/x.py"], ["/etc/passwd"], ["../up"], ["src/*.py"], ["AGENTS.md"], []):
         broken = json.loads(json.dumps(good))
         broken["subtasks"][1]["paths"] = bad_paths
@@ -681,13 +690,63 @@ def planner_tests(tmp: Path) -> None:
     dup = json.loads(json.dumps(good))
     dup["subtasks"][1]["id"] = "api"
     assert validate_plan(dup) is None
+    # A thin plan (the old spec/acceptance/paths shape) is refused with every missing field named.
+    thin = {"subtasks": [{"id": "a", "title": "A", "spec": "do it", "acceptance": "works", "paths": ["src/a.py"]}]}
+    problems = []
+    assert validate_plan(thin, problems) is None
+    for field in ("goal", "context", "steps", "out_of_scope", "interfaces", "tests_first", "edge_cases", "verify", "stop_when"):
+        assert any(f"`{field}`" in p for p in problems), (field, problems)
+    for mutate, needle in ((lambda t: t.update(context=["it is fine"]), "cite the files"),
+                           (lambda t: t.update(verify=[{"command": "pytest"}]), "expect"),
+                           (lambda t: t.update(steps=["edit <path to file>"]), "placeholders"),
+                           (lambda t: t.update(edge_cases=["..."]), "placeholders")):
+        weak = json.loads(json.dumps(good))
+        mutate(weak["subtasks"][0])
+        problems = []
+        assert validate_plan(weak, problems) is None and any(needle in p for p in problems), (needle, problems)
+    # The brief the builder gets has every section, in working order.
+    spec = plan[0]["spec"]
+    order = ["## Goal", "## Known facts", "## Scope", "## Interfaces", "## Tests first", "## Steps", "## Edge cases",
+             "## Acceptance criteria", "## Verification", "## Stop conditions"]
+    assert [spec.index(h) for h in order] == sorted(spec.index(h) for h in order), spec
+    assert "`python -m pytest -q` -> expected: all tests pass" in spec and "- [ ] add GET /x" in spec
     child = subtask_ticket({"selected": {"task": {"id": 1, "title": "T"}, "repository": {"path": "/r"}}}, plan[0])
     assert child["selected"]["scope_paths"] == ["src/api/", "tests/test_api.py"]
     assert child["selected"]["task"]["title"].startswith("[api]") and "add GET /x" in child["selected"]["task"]["description"]
 
-    # The builder prompt carries the (sub)task's spec and acceptance, not only its title.
+    # The builder prompt carries the (sub)task's brief, not only its title.
     prompt = build_prompt(child, mode="implement", branch="ai/x", worktree=tmp)
-    assert "add GET /x" in prompt and "Acceptance: test passes" in prompt
+    assert "add GET /x" in prompt and "## Acceptance criteria" in prompt
+
+    # The planner gets one retry with the reasons when its plan is thin; still thin -> no plan.
+    from book_dev_ai_dispatch import run_planner
+    prepo = tmp / "planrepo"
+    git_repo(prepo)
+    pbase = subprocess.run(["git", "-C", str(prepo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    replies = ["```json\n" + json.dumps(thin) + "\n```", "```json\n" + json.dumps(good) + "\n```"]
+    prompts: list[str] = []
+
+    def fake_planner(provider, *, prompt, dispatch_dir, label, **_):
+        prompts.append(prompt)
+        (dispatch_dir / f"{label}.last-message.md").write_text(replies[len(prompts) - 1])
+        (dispatch_dir / f"{label}.log").write_text("log\n")
+        return {"provider": provider, "status": "dispatched"}
+
+    pdir = tmp / "plandir"
+    pdir.mkdir()
+    with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=fake_planner):
+        got, rec = run_planner({"selected": {"task": {"title": "T", "description": "D"}}}, repo_dir=prepo, base=pbase,
+                               dispatch_dir=pdir, model="opus", parallel=2, max_turns=5, timeout_sec=60)
+    assert got and [t["id"] for t in got] == ["api", "ui"] and rec["plan_attempts"] == 2, rec
+    assert any("`goal`" in p for p in rec["plan_problems"]), "first-round reasons stay in the report"
+    assert "rejected" not in prompts[0] and "rejected" in prompts[1] and "`tests_first`" in prompts[1], prompts[1][-2000:]
+    assert "\"spec\": \"do it\"" in prompts[1], "the previous plan comes back to be fixed"
+    prompts.clear()
+    replies[1] = replies[0]
+    with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=fake_planner):
+        got, rec = run_planner({"selected": {"task": {"title": "T", "description": "D"}}}, repo_dir=prepo, base=pbase,
+                               dispatch_dir=pdir, model="opus", parallel=2, max_turns=5, timeout_sec=60)
+    assert got is None and len(prompts) == 2 and rec["plan_problems"], rec
 
     # A timed-out child gets SIGTERM, then SIGKILL; run_child returns promptly.
     from book_dev_ai_dispatch import run_child
@@ -838,7 +897,7 @@ def planner_tests(tmp: Path) -> None:
         with mock.patch("book_dev_ai_dispatch.run_planner", return_value=(one, planned)), \
                 mock.patch("book_dev_ai_dispatch.run_provider", side_effect=one_flow):
             report = dispatch(**common)
-        assert report["status"] == "dispatched" and "Planner's spec" in builds[0] and "add GET /x" in builds[0], report
+        assert report["status"] == "dispatched" and "Planner's brief" in builds[0] and "add GET /x" in builds[0], report
 
 
 def main() -> int:

@@ -60,8 +60,23 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
 - **effort ของ Codex แยกตามบทบาท** (2026-11-10): builder `model_reasoning_effort=xhigh` (`BOOK_DEV_BUILDER_EFFORT`), reviewer `high` (`BOOK_DEV_REVIEWER_EFFORT`); ค่าอื่นนอก `minimal|low|medium|high|xhigh` ถูกปฏิเสธ
 - **ส่งต่อให้ Claude เมื่อแก้ไม่ผ่าน** (2026-11-10): ถ้า builder แบบ Codex แก้ครบ 2 รอบแล้ว reviewer ยัง BLOCKING, Claude (`BOOK_DEV_ESCALATION_MODEL`, ค่าเริ่มต้น `opus`) รันแบบ read-only (plan mode, guard, env ถูกตัด, checkout แยกของ commit นั้น) ได้รับรายงานรีวิวทุกรอบ + diff แล้วเขียนแผนแก้ละเอียด จากนั้น builder ได้อีก 1 รอบตามแผน แล้ว reviewer รีวิวใหม่ ถ้ายังไม่ผ่าน หรือ Claude ให้แผนไม่ได้ จะเป็น `review_blocked` ให้เจ้าของ (แผนอยู่ที่ `dispatch/<stamp>/claude-plan.last-message.md`, `flow.escalation`) ปิดด้วย `BOOK_DEV_ESCALATE=none`; builder `claude` ไม่ส่งต่อหาตัวเอง
 - **Claude วางแผน + worker หลายตัวพร้อมกัน** (2026-11-10, builder `codex` เท่านั้น):
-  1. Claude (`BOOK_DEV_ESCALATION_MODEL`, read-only บน checkout ของ base) อ่าน ticket แล้วคืนแผน JSON: งานย่อย 1–6 ชิ้น แต่ละชิ้นมี spec, acceptance และ `paths` ที่แก้ได้ (ห้ามซ้อนกัน ห้าม wildcard/`..`/ไฟล์คำสั่ง agent) แผนอยู่ที่ `dispatch/<stamp>/claude-split.last-message.md`
-  2. งานย่อยเดียว (หรือแผนใช้ไม่ได้): flow ปกติ โดยใส่ spec ของ Claude ใน prompt ของ builder
+  1. Claude (`BOOK_DEV_ESCALATION_MODEL`, read-only บน checkout ของ base) อ่าน ticket, ไฟล์ที่จะแก้, test และคำสั่ง test/lint จริงของ repo แล้วคืนแผน JSON: งานย่อย 1–6 ชิ้น `paths` ห้ามซ้อนกัน ห้าม wildcard/`..`/ไฟล์คำสั่ง agent แผนอยู่ที่ `dispatch/<stamp>/claude-split.last-message.md`
+     - **มาตรฐาน brief (2026-11-10)** ตามเทมเพลต delegation brief ของ skill `subagent-orchestration` ทุกงานย่อยต้องมีครบทุกช่อง เขียน `"none"` ได้เฉพาะช่องที่ไม่มีอะไรจริง ๆ:
+       - `goal`: งานนี้ทำให้อะไรเป็นจริง
+       - `context`: ข้อเท็จจริงที่อ่านมาแล้ว อ้าง path หรือ path:line
+       - `paths`: ไฟล์ที่แก้ได้
+       - `out_of_scope`: สิ่งที่ห้ามแตะ
+       - `interfaces`: ชื่อ, signature, route หรือรูปข้อมูลที่งานย่อยอื่นใช้ร่วม
+       - `tests_first`: test ที่ต้องเขียนก่อนโค้ด ตาม ADR-0004
+       - `steps`: ขั้นตอนเรียงลำดับ ระบุไฟล์และฟังก์ชัน
+       - `edge_cases`
+       - `acceptance`: เกณฑ์ที่เช็กได้จริง
+       - `verify`: `command` ที่รันจาก root ของ repo พร้อม `expect`
+       - `stop_when`: เมื่อไหร่ต้องหยุดแล้วรายงาน
+     - `validate_plan` ตีกลับแผนที่ขาดช่อง, ที่ `context` ไม่อ้างไฟล์, ที่ `verify` ไม่มีผลที่คาดหวัง หรือที่มี placeholder (`<path>`, `<exact command>`, `...` เดี่ยว ๆ) แผนจะกลับไปให้ Claude แก้ 1 รอบ พร้อมเหตุผลทุกข้อและแผนเดิม ถ้ายังไม่ครบ งานจะรันทั้งก้อนโดยไม่มีแผน ดูได้ที่ `flow.planner.attempts` และ `flow.planner.problems`
+     - builder ได้ brief ในรูป markdown ตามลำดับ: Goal → Known facts → Scope → Interfaces → Tests first → Steps → Edge cases → Acceptance → Verification → Stop conditions และถูกสั่งให้ทำทีละขั้น เขียน test ก่อน รันทุกคำสั่ง verify แล้วรายงานผลจริง
+     - แผนแก้ตอน escalate ก็ต้องมี root cause อ้าง path:line, test ที่ต้องเขียนก่อน, edge cases, คำสั่ง verify พร้อมผลที่คาดหวัง และ stop conditions
+  2. งานย่อยเดียว (หรือแผนใช้ไม่ได้): flow ปกติ โดยใส่ brief ของ Claude ใน prompt ของ builder
   3. หลายงานย่อย: dispatcher ลูก 1 ตัวต่องาน (process แยก, worktree/branch/sandbox/การกัน process ของตัวเอง, `--branch-only --no-plan`) รันพร้อมกันสูงสุด `BOOK_DEV_PARALLEL` (ค่าเริ่มต้น 3) แต่ละตัว Luna สร้าง → Sol รีวิว → แก้/ส่งต่อ Claude ตามปกติ งานย่อยที่แก้ไฟล์นอก `paths` ของตัวเองจะหยุด (`out_of_scope`)
   4. ทุกงานย่อยต้องผ่าน (ไม่งั้น `review_blocked` และเก็บ branch ไว้) แล้ว dispatcher รวมด้วย git plumbing (`read-tree`/`update-index --cacheinfo`/`write-tree`/`commit-tree`, ไม่มี merge driver/filter/hook) เป็น commit เดียวที่มี parent เป็น base + ทุกงานย่อย Sol รีวิวภาพรวมอีกรอบ (แก้/ส่งต่อได้) แล้วเปิด PR เดียว
   ปิด planner ด้วย `BOOK_DEV_PLANNER=none` หรือ `--no-plan`; `flow.planner` และ `flow.subtasks` อยู่ใน report
