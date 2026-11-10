@@ -22,6 +22,17 @@ container has an 8 GB / 6 CPU limit, `--restart unless-stopped`, no Docker socke
 mount, so jobs cannot read this machine's credentials. `JOB_CLEANUP=off` keeps dependency caches
 (memory is not billed locally). Registrations live in `~/.local/share/ci-runner-local/config`.
 
+**Host moved to Fedora (2026-11-10).** The container now runs on the Fedora homelab box
+(`192.168.152.12`, Ryzen 7 4700U, 8 threads, 15 GiB), not on the workstation, so CI keeps
+running when the workstation is off or rebooting into Windows. It has a 12 GB / 7 CPU limit and the
+volume is mounted with `:Z` (SELinux). Fedora is set up as a server: the sleep, suspend and hibernate
+targets are masked, the lid switch is ignored, it boots to `multi-user.target`, and Docker is enabled at
+boot. The registrations were moved, not re-created (the same 29 `local-<name>` runner IDs). The old
+workstation state is kept, but not used, at `~/.local/share/ci-runner-local.moved-to-fedora-2026-11-10`.
+Drive Fedora from the workstation with the header of `local/run.sh`
+(`DOCKER_HOST=ssh://bookchaowalit@192.168.152.12 CI_RUNNER_MEMORY=12g CI_RUNNER_CPUS=7 CI_RUNNER_SELINUX=1`,
+with `~/.ssh/homelab_ed25519` in `ssh-agent`). Never run the container on two hosts at once.
+
 Railway runner-multi keeps its `railway-<name>` registrations as the fallback.
 `.github/workflows/ci-runner-failover.yml` (every 10 minutes, GitHub-hosted, environment
 `ci-runner-failover`) runs `infra/scripts/platform/ci_runner_failover.py`: if the first runner in
