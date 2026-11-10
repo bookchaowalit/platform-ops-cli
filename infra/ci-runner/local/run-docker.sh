@@ -46,7 +46,12 @@ load_image() {
   tar -czf - -C "$here/.." Dockerfile entrypoint.sh job-cleanup.sh multi-runner.sh start-postgres.sh |
     remote "rm -rf \$HOME/ci-runner-ctx && mkdir -p \$HOME/ci-runner-ctx && tar -xzf - -C \$HOME/ci-runner-ctx &&
       docker build -q -t ci-runner-local \$HOME/ci-runner-ctx >/dev/null &&
-      docker save ci-runner-local | $AS podman load -q >/dev/null && echo image loaded"
+      docker save ci-runner-local | $AS podman load -q >/dev/null"
+  # Run by image ID, not by tag: a job can retag images in this podman store, but cannot forge an ID
+  # (a content hash), so a restart never picks up an image a job planted.
+  IMAGE_ID=$(remote "$AS podman image inspect --format '{{.Id}}' $IMAGE")
+  [[ $IMAGE_ID =~ ^[0-9a-f]{64}$ ]] || { echo "bad image id: $IMAGE_ID" >&2; exit 1; }
+  echo "image loaded: ${IMAGE_ID:0:12}"
 }
 
 register() {
@@ -65,7 +70,7 @@ register() {
     # Tokens go over SSH stdin into a 0600 file that is deleted right after registration.
     remote "$AS bash -c 'umask 077; cat > ~/.reg.env; podman run --rm --security-opt label=disable \
       -e RUNNERS=\"$RUNNERS\" -e LABELS=$LABELS -e RUNNER_NAME_PREFIX=docker -e REGISTER_ONLY=1 \
-      --env-file ~/.reg.env -v ~/runner-config:/runner-config $IMAGE | tail -1; rc=\${PIPESTATUS[0]}; rm -f ~/.reg.env; exit \$rc'" <"$envfile"
+      --env-file ~/.reg.env -v ~/runner-config:/runner-config $IMAGE_ID | tail -1; rc=\${PIPESTATUS[0]}; rm -f ~/.reg.env; exit \$rc'" <"$envfile"
   fi
   rm -f "$envfile"
 }
@@ -75,11 +80,15 @@ install_unit() {
   remote "$AS bash -c 'mkdir -p ~/.config/containers/systemd && umask 077 && cat > ~/.config/containers/systemd/$UNIT.env && cat > ~/.config/containers/systemd/$UNIT.container <<EOF
 [Unit]
 Description=GitHub Actions runners with a container engine (label docker)
+# Jobs use the podman API socket of ci-docker; it must exist before the bind mount below.
+Requires=podman.socket
+After=podman.socket
 
 [Container]
 ContainerName=$UNIT
-Image=$IMAGE
+Image=$IMAGE_ID
 EnvironmentFile=%h/.config/containers/systemd/$UNIT.env
+# Read-write: multi-runner.sh chmods each saved registration on start (a :ro mount makes it exit).
 Volume=%h/runner-config:/runner-config
 Volume=%t/podman/podman.sock:/var/run/docker.sock
 SecurityLabelDisable=true
@@ -91,7 +100,7 @@ Restart=always
 [Install]
 WantedBy=default.target
 EOF
-systemctl --user daemon-reload && systemctl --user restart $UNIT.service && systemctl --user is-active $UNIT.service'" <<EOF
+systemctl --user enable --now podman.socket && systemctl --user daemon-reload && systemctl --user restart $UNIT.service && systemctl --user is-active $UNIT.service'" <<EOF
 RUNNERS=$RUNNERS
 LABELS=$LABELS
 RUNNER_NAME_PREFIX=docker

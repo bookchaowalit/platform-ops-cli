@@ -54,7 +54,14 @@ on Fedora under the unprivileged user `ci-docker` with rootless podman, as a pod
 (`DOCKER_BUILDKIT=0` → podman's build API); short image names resolve to Docker Hub
 (`~/.config/containers/registries.conf`), and `podman-ci-prune.timer` prunes images unused for 7 days every
 Sunday. Only `platform-ci-workflows/image-scan.yml` targets them. Escape boundary = `ci-docker` (no root, no
-`docker` group, home 700). One-time owner setup with sudo is in the script header. Limit: a job's
+`docker` group, home 700). One-time owner setup with sudo is in the script header.
+The service runs the image **by ID** (recorded by `run-docker.sh up`), so a job that retags images in the
+shared podman store cannot make a restart run its image. It is ordered after `podman.socket`.
+Residual risk (accepted, single owner): all 13 runners share one container, so a job can read every
+`docker-*` registration in it, and it can use the socket to stop or remove the runner container (DoS).
+This is the same multi-runner trade-off as the `local`/`railway` sets. No org runner group allows public
+repositories (checked 2026-11-10), so fork PRs cannot reach any of them. The stronger option, one ephemeral
+(JIT) runner per job in a fresh container, is not built. Limit: a job's
 `docker run -v $PWD:...` mounts the host path, not the runner container's `/_work`, so bind-mounting the
 checkout into a container does not work; `docker build` (context upload) does.
 
