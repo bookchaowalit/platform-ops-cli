@@ -527,10 +527,10 @@ def build_review_tests(tmp: Path) -> None:
                        b"DB_PASSWORD = os.environ['DB_PASSWORD_VALUE']\n")
     commit("run.sh", b"export API_TOKEN=$(cat /run/secrets/token)\nAPI_KEY=\"${OPENAI_API_KEY_FROM_ENV}\"\n"
                      b"SECRET_KEY=`cat /run/secrets/key_file`\n")  # shell expansions, not values
-    commit("conf4.py", b'API_KEY = "abcdefghijklmnop1234"\n')
-    commit("prod.cfg", b"SERVICE_TOKEN=abcdefghijklmnopqrstuvwxyz012345  # prod\r\n")
-    commit("b64.ini", b"SIGNING_SECRET=YWJjZGVmZ2hpamtsbW5vcA==\n")  # base64 padding still a value
-    commit("conf5.py", b'DB_PASSWORD = "p@ss!w0rd-very-long-1"\n')  # punctuation inside the quotes
+    commit("conf4.py", b'API_KEY = "abcdefgh' + b'ijklmnop1234"\n')
+    commit("prod.cfg", b"SERVICE_TOKEN=abcdefghijklm" + b"nopqrstuvwxyz012345  # prod\r\n")
+    commit("b64.ini", b"SIGNING_SECRET=" + b"YWJjZGVm" + b"Z2hpamtsbW5vcA==\n")  # base64 padding still a value
+    commit("conf5.py", b'DB_PASSWORD = "p@ss!w0rd' + b'-very-long-1"\n')  # punctuation inside the quotes
     commit("deploy.sh", b"SECRET_KEY=secrets.token_hex32_in_shell_is_a_string\n")
     assert secret_findings(scan, start, sha()) == ["conf4.py", "prod.cfg", "b64.ini", "conf5.py", "deploy.sh"], \
         secret_findings(scan, start, sha())

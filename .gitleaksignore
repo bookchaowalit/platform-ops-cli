@@ -1,0 +1,3 @@
+# Fake test fixture (base64 of "abcdefghijklmnop") in the secret-scan test, committed whole once;
+# the test now builds it by concatenation.
+882f85ef3301e6c4a0d65d206a3fa149c759092a:infra/tests/agent/book_dev_ai_dispatch_test.py:generic-api-key:532
