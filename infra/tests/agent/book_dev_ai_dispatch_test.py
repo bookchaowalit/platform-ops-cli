@@ -525,10 +525,15 @@ def build_review_tests(tmp: Path) -> None:
     start = sha()
     commit("conf3.py", b"SECRET_KEY = secrets.token_hex(32)\nAPI_KEY = settings.OPENAI_API_KEY\n"
                        b"DB_PASSWORD = os.environ['DB_PASSWORD_VALUE']\n")
-    commit("run.sh", b"export API_TOKEN=$(cat /run/secrets/token)\nSECRET_KEY=secrets.token_hex(32)\n")
+    commit("run.sh", b"export API_TOKEN=$(cat /run/secrets/token)\nAPI_KEY=\"${OPENAI_API_KEY_FROM_ENV}\"\n"
+                     b"SECRET_KEY=`cat /run/secrets/key_file`\n")  # shell expansions, not values
     commit("conf4.py", b'API_KEY = "abcdefghijklmnop1234"\n')
     commit("prod.cfg", b"SERVICE_TOKEN=abcdefghijklmnopqrstuvwxyz012345  # prod\r\n")
-    assert secret_findings(scan, start, sha()) == ["conf4.py", "prod.cfg"], secret_findings(scan, start, sha())
+    commit("b64.ini", b"SIGNING_SECRET=YWJjZGVmZ2hpamtsbW5vcA==\n")  # base64 padding still a value
+    commit("conf5.py", b'DB_PASSWORD = "p@ss!w0rd-very-long-1"\n')  # punctuation inside the quotes
+    commit("deploy.sh", b"SECRET_KEY=secrets.token_hex32_in_shell_is_a_string\n")
+    assert secret_findings(scan, start, sha()) == ["conf4.py", "prod.cfg", "b64.ini", "conf5.py", "deploy.sh"], \
+        secret_findings(scan, start, sha())
     start = sha()
     sub_sha = sha()
     subprocess.run(["git", "-C", str(scan), "update-index", "--add", "--cacheinfo", f"160000,{sub_sha},vendor/lib"], check=True)
@@ -718,7 +723,25 @@ def planner_tests(tmp: Path) -> None:
     order = ["## Goal", "## Known facts", "## Scope", "## Interfaces", "## Tests first", "## Steps", "## Edge cases",
              "## Acceptance criteria", "## Verification", "## Stop conditions"]
     assert [spec.index(h) for h in order] == sorted(spec.index(h) for h in order), spec
-    assert "`python -m pytest -q` -> expected: all tests pass" in spec and "- [ ] add GET /x" in spec
+    assert "Check 1 (expected: all tests pass):\n```sh\npython -m pytest -q\n```" in spec and "- [ ] add GET /x" in spec
+    # A heredoc or quoted whitespace in a verify command reaches the brief unchanged, in a fence it cannot close.
+    heredoc = "python - <<'PY'\nassert 'a  b'.split('  ') == ['a', 'b']\nPY"
+    odd = json.loads(json.dumps(good))
+    odd["subtasks"][0]["verify"] = [{"command": heredoc, "expect": "exit 0"}, {"command": "echo '```'", "expect": "fence"}]
+    kept = validate_plan(odd)[0]["spec"]
+    assert f"```sh\n{heredoc}\n```" in kept and "````sh\necho '```'\n````" in kept, kept
+    blank = json.loads(json.dumps(good))
+    blank["subtasks"][0]["verify"] = [{"command": " \n ", "expect": "x"}]
+    assert validate_plan(blank) is None
+
+    # The timer's deadline covers the longest planned flow; a child gets one whole flow.
+    from book_dev_ai_dispatch import FLOW_RUNS, child_timeout_sec, worst_case_seconds
+    assert FLOW_RUNS == 9 and child_timeout_sec(1800) >= 9 * 1800
+    assert worst_case_seconds(1800) >= 2 * 1800 + child_timeout_sec(1800) + 8 * 1800
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "workflows"))
+    import install_book_dev_dispatch_timer as installer
+    assert installer.SERVICE_TIMEOUT_SEC > worst_case_seconds(1800)
+    assert f"TimeoutStartSec={installer.SERVICE_TIMEOUT_SEC}" in installer.render_units(tmp, "/usr/bin/python3", tmp)["book-dev-dispatch.service"]
     child = subtask_ticket({"selected": {"task": {"id": 1, "title": "T"}, "repository": {"path": "/r"}}}, plan[0])
     assert child["selected"]["scope_paths"] == ["src/api/", "tests/test_api.py"]
     assert child["selected"]["task"]["title"].startswith("[api]") and child["selected"]["brief"] == plan[0]["spec"]

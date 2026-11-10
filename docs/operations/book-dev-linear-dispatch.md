@@ -74,6 +74,7 @@ Repo ปลายทางไม่มี `.claude/settings.json` และ hook
        - `verify`: `command` ที่รันจาก root ของ repo พร้อม `expect`
        - `stop_when`: เมื่อไหร่ต้องหยุดแล้วรายงาน
      - `validate_plan` ตีกลับแผนที่ขาดช่อง, ที่ `context` ไม่อ้างไฟล์, ที่ `verify` ไม่มีผลที่คาดหวัง หรือที่มี placeholder (`<path>`, `<exact command>`, `...` เดี่ยว ๆ) แผนจะกลับไปให้ Claude แก้ 1 รอบ พร้อมเหตุผลทุกข้อและแผนเดิม ถ้ายังไม่ครบ งานจะรันทั้งก้อนโดยไม่มีแผน ดูได้ที่ `flow.planner.attempts` และ `flow.planner.problems`
+     - คำสั่ง `verify` เก็บไว้ตรงตัว รวม heredoc และ whitespace ที่อยู่ใน quote แล้ว render ใน code fence ที่ไม่เยื้อง งานย่อยที่รันพร้อมกันได้ brief เต็มผ่าน `selected.brief` ไม่ถูกตัด
      - builder ได้ brief ในรูป markdown ตามลำดับ: Goal → Known facts → Scope → Interfaces → Tests first → Steps → Edge cases → Acceptance → Verification → Stop conditions และถูกสั่งให้ทำทีละขั้น เขียน test ก่อน รันทุกคำสั่ง verify แล้วรายงานผลจริง
      - แผนแก้ตอน escalate ก็ต้องมี root cause อ้าง path:line, test ที่ต้องเขียนก่อน, edge cases, คำสั่ง verify พร้อมผลที่คาดหวัง และ stop conditions
   2. งานย่อยเดียว (หรือแผนใช้ไม่ได้): flow ปกติ โดยใส่ brief ของ Claude ใน prompt ของ builder
@@ -121,3 +122,7 @@ systemctl --user disable --now book-dev-dispatch.timer
 Timer รันทุก 2 ชั่วโมงตั้งแต่ 08:00 ถึง 22:00 (Asia/Bangkok) และไม่เริ่มรอบใหม่ระหว่างที่รอบก่อนยังทำงานอยู่
 Service ให้เวลาหนึ่งรอบสูงสุด 3 ชั่วโมง 10 นาที (สร้าง + แก้ 2 + รีวิว 3 ครั้ง ครั้งละ 30 นาที) หลังอัปเดตให้รัน `task book-dev:linear:timer -- --activate --replace`
 Timer ทำงานเฉพาะตอนที่เครื่องและ user service เปิดอยู่
+
+
+### เวลาสูงสุดของ timer (2026-11-10)
+`TimeoutStartSec` ของ `book-dev-dispatch.service` คำนวณจาก `worst_case_seconds(1800)` ใน dispatcher ซึ่งรวม planner 2 รอบ, งานย่อยที่รันพร้อมกัน (หนึ่ง flow เต็ม = 9 รอบ CLI) และ flow ของงานรวม (8 รอบ) บวก margin ที่ 1800 วินาทีต่อรอบ จะได้ 36000 วินาที (10 ชม.) ถ้าเปลี่ยน `MAX_FIX_ROUNDS` หรือจำนวนรอบ planner ให้รัน `python3 infra/scripts/workflows/install_book_dev_dispatch_timer.py --activate` ใหม่

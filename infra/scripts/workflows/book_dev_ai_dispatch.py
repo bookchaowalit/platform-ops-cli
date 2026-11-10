@@ -88,12 +88,13 @@ SECRET_CONTENT_RE = re.compile(
     r"|\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@]{1,64}:[^/\s@]{6,128}@[\w.-]+"
     # A quoted literal assigned to a credential-named key at line start (any file: dotenv, shell,
     # source code). An expression such as secrets.token_hex(32) or settings.API_KEY is not quoted.
-    r"|(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*['\"][A-Za-z0-9_+/.~:-]{16,}['\"])"
+    r"|(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*['\"](?![$`])[^'\"\s]{16,}['\"])"
 )
 # An unquoted KEY=value line is a credential only outside source code, where `API_KEY = settings.X`
-# is an expression: dotenv, ini, shell and config files. The value must fill the rest of the line.
+# is an expression: in dotenv, ini, shell and config files any 16+ non-space value counts (base64
+# padding, "=", "@" included), except a shell expansion such as $(cat f), ${VAR} or a backtick.
 DOTENV_LITERAL_BYTES_RE = re.compile(
-    (r"(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*[A-Za-z0-9_+/.~:-]{16,}[ \t]*(?:#.*)?\r?$)").encode()
+    (r"(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*(?![$`'\"])\S{16,})").encode()
 )
 SOURCE_CODE_RE = re.compile(
     r"\.(py|pyi|js|mjs|cjs|ts|mts|cts|tsx|jsx|go|rs|java|kt|kts|scala|rb|php|cs|swift|c|h|cc|cpp|hpp|m|mm|dart"
@@ -120,6 +121,22 @@ MAX_SUBTASKS = 6
 SUBTASK_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 REVIEWER_MODEL_ENV = "BOOK_DEV_REVIEWER_MODEL"
 MAX_FIX_ROUNDS = 2
+PLAN_ATTEMPTS = 2  # the split plan, plus one retry when it is thin
+# CLI runs in one build-review flow at most: builds and reviews for the first round, each fix round
+# and the escalated round, plus the escalation fix plan.
+FLOW_RUNS = 2 * (MAX_FIX_ROUNDS + 2) + 1
+RUN_MARGIN_SEC = 600  # git, push, PR creation and the Linear calls around a run
+
+
+def child_timeout_sec(timeout_sec: int) -> int:
+    """A parallel subtask's dispatcher: one whole flow."""
+    return timeout_sec * FLOW_RUNS + RUN_MARGIN_SEC
+
+
+def worst_case_seconds(timeout_sec: int) -> int:
+    """The longest a planned job can take when every CLI run uses its full timeout: the plan and its
+    retry, the parallel children, then the combined change's flow (it starts at a review)."""
+    return timeout_sec * PLAN_ATTEMPTS + child_timeout_sec(timeout_sec) + timeout_sec * (FLOW_RUNS - 1) + RUN_MARGIN_SEC
 # Files an agent CLI may load as instructions. The reviewer runs with project
 # docs disabled; a branch touching any of these still goes to the owner unreviewed.
 AGENT_INSTRUCTION_RE = re.compile(
@@ -1104,7 +1121,10 @@ def validate_plan(plan: Any, problems: list[str] | None = None) -> list[dict[str
             problems.append(f"{where}: `context` must cite the files you read (path or path:line)")
         verify = []
         for check in item.get("verify") if isinstance(item.get("verify"), list) else []:
-            command = _clean(check.get("command"), 600) if isinstance(check, dict) else ""
+            # Kept verbatim (heredocs, quoted whitespace); only surrounding blank lines go.
+            command = str(check.get("command") or "").strip("\n").rstrip()[:4000] if isinstance(check, dict) else ""
+            if "\0" in command or not command.strip():
+                command = ""
             expect = _clean(check.get("expect"), 600) if isinstance(check, dict) else ""
             if not command or not expect:
                 problems.append(f"{where}: each `verify` item needs a `command` and its `expect`ed result")
@@ -1132,7 +1152,14 @@ def render_brief(t: dict[str, Any]) -> str:
         return "\n".join(f"{mark} {item}" for item in items) or "- none"
 
     steps = "\n".join(f"{i}. {step}" for i, step in enumerate(t["steps"], 1))
-    checks = "\n".join(f"- `{c['command']}` -> expected: {c['expect']}" for c in t["verify"])
+    def fenced(command: str) -> str:
+        # Top-level fence, never indented (an indented heredoc terminator would change the command),
+        # longer than any backtick run inside it.
+        fence = "`" * max(3, 1 + max((len(run) for run in re.findall(r"`+", command)), default=0))
+        return f"{fence}sh\n{command}\n{fence}"
+
+    checks = "\n\n".join(f"Check {i} (expected: {c['expect']}):\n{fenced(c['command'])}"
+                           for i, c in enumerate(t["verify"], 1))
     return f"""# Brief [{t['id']}]: {t['title']}
 
 ## Goal
@@ -1661,7 +1688,7 @@ def run_planner(ticket: dict[str, Any], *, repo_dir: Path, base: str, dispatch_d
             return None, {"provider": "claude", "status": "failed", "error": "could not create planner checkout"}
         try:
             # A plan that misses brief fields goes back to the planner once with the reasons.
-            for attempts in (1, 2):
+            for attempts in range(1, PLAN_ATTEMPTS + 1):
                 previous = "\n".join(re.findall(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)[-1:])
                 prompt = build_split_prompt(ticket, base=base, parallel=parallel, problems=problems, previous=previous)
                 result = run_provider(
@@ -1768,7 +1795,7 @@ def planned_build(*, ticket: dict[str, Any], ticket_path: Path, dispatch_dir: Pa
         child_ticket.write_text(json.dumps(subtask_ticket(ticket, task), ensure_ascii=False), encoding="utf-8")
         jobs.append((task, [sys.executable, script, "--ticket", str(child_ticket), "--stamp", f"{stamp}-{task['id']}",
                             "--base", base, *passthrough]))
-    child_timeout = timeout_sec * (MAX_FIX_ROUNDS + 3) * 2 + 600
+    child_timeout = child_timeout_sec(timeout_sec)
     with ThreadPoolExecutor(max_workers=min(parallel, len(jobs))) as pool:
         reports = list(pool.map(lambda job: run_child(job[1], child_timeout), jobs))
     children = [{"id": task["id"], "status": report.get("status"), "branch": (report.get("flow") or {}).get("branch"),

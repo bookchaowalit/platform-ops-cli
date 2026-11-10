@@ -27,11 +27,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from book_dev_ai_dispatch import worst_case_seconds  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 UNIT = "book-dev-dispatch"
-# Build-review flow worst case: build + 2 fixes + 3 reviews at the 1800 s
-# per-provider timeout, plus margin for git, push and PR creation.
-SERVICE_TIMEOUT_SEC = 6 * 1800 + 600
+# The dispatcher's own worst case at the cycle's 1800 s per-CLI timeout: planner and its retry,
+# parallel subtasks, then the combined review flow with fix rounds and escalation.
+DISPATCH_TIMEOUT_SEC = 1800
+SERVICE_TIMEOUT_SEC = worst_case_seconds(DISPATCH_TIMEOUT_SEC) + 600
 SCHEDULE = "*-*-* 08,10,12,14,16,18,20,22:00:00 Asia/Bangkok"
 
 
