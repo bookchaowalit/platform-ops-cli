@@ -33,6 +33,14 @@ Drive Fedora from the workstation with the header of `local/run.sh`
 (`DOCKER_HOST=ssh://bookchaowalit@192.168.152.12 CI_RUNNER_MEMORY=12g CI_RUNNER_CPUS=7 CI_RUNNER_SELINUX=1`,
 with `~/.ssh/homelab_ed25519` in `ssh-agent`). Never run the container on two hosts at once.
 
+**Railway stopped (owner decision 2026-11-10):** "use the VM runners, not Railway, to save cost".
+`railway down -s runner-multi` was run, so all 29 `railway-*` runners are offline. The volume and
+registrations are kept. A CI rerun afterwards ran all 5 architecture-docs jobs on `local-architecture-docs`.
+Each repository now has **one** runner, so its jobs run one after another (that run took 12 minutes in a row,
+where it ran in parallel before). If Fedora is down, jobs wait in the queue (up to 24 h) until it is back, or
+until someone runs `railway redeploy -s runner-multi` by hand. The watchdog below can do that restart on its
+own only after the owner sets `RAILWAY_TOKEN`.
+
 Railway runner-multi keeps its `railway-<name>` registrations as the fallback.
 `.github/workflows/ci-runner-failover.yml` (every 10 minutes, GitHub-hosted, environment
 `ci-runner-failover`) runs `infra/scripts/platform/ci_runner_failover.py`: if the first runner in
