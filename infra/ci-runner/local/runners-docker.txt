@@ -1,0 +1,15 @@
+# Docker-capable runners (run-docker.sh, label docker): orgs + private personal repos that have a Dockerfile.
+# Public repos build and scan images on GitHub-hosted runners instead.
+org-ai=https://github.com/bookchaowalit-ai
+book-storybook=https://github.com/bookchaowalit/book-storybook
+linerichmenu=https://github.com/bookchaowalit/marketing-linerichmenu-web
+org-ar=https://github.com/bookchaowalit-ar
+org-desktop=https://github.com/bookchaowalit-desktop
+org-game=https://github.com/bookchaowalit-game
+org-products=https://github.com/bookchaowalit-products
+org-startup=https://github.com/bookchaowalit-startup
+org-vr=https://github.com/bookchaowalit-vr
+org-mobile=https://github.com/bookchaowalit-mobile
+org-backend=https://github.com/bookchaowalit-backend
+org-agency=https://github.com/bookchaowalit-agency
+org-website=https://github.com/bookchaowalit-website

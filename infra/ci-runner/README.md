@@ -47,6 +47,17 @@ own only after the owner sets `RAILWAY_TOKEN`.
 and 7 CPU each. The architecture-docs CI went from 12 min (all jobs one after another) to 7 min (two at a
 time). Adding a runner means running `run.sh up` for both instances.
 
+**Docker-capable runners (2026-11-10):** `local/run-docker.sh` runs `docker-<name>` runners (labels
+`self-hosted,linux,x64,docker`, list `local/runners-docker.txt`: the orgs plus private repos with a Dockerfile)
+on Fedora under the unprivileged user `ci-docker` with rootless podman, as a podman Quadlet user service
+`ci-runner-docker` (3 GB / 4 CPU). Jobs use that user's podman socket as `/var/run/docker.sock`
+(`DOCKER_BUILDKIT=0` → podman's build API); short image names resolve to Docker Hub
+(`~/.config/containers/registries.conf`), and `podman-ci-prune.timer` prunes images unused for 7 days every
+Sunday. Only `platform-ci-workflows/image-scan.yml` targets them. Escape boundary = `ci-docker` (no root, no
+`docker` group, home 700). One-time owner setup with sudo is in the script header. Limit: a job's
+`docker run -v $PWD:...` mounts the host path, not the runner container's `/_work`, so bind-mounting the
+checkout into a container does not work; `docker build` (context upload) does.
+
 Railway runner-multi keeps its `railway-<name>` registrations as the fallback.
 `.github/workflows/ci-runner-failover.yml` (every 10 minutes, GitHub-hosted, environment
 `ci-runner-failover`) runs `infra/scripts/platform/ci_runner_failover.py`: if the first runner in
