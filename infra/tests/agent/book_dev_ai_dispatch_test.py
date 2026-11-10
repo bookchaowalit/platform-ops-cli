@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -520,6 +521,14 @@ def build_review_tests(tmp: Path) -> None:
     commit("settings.ini", b"export SERVICE_TOKEN='abcdefghijklmnopqrstuvwxyz012345'\n")
     commit("app2.py", b"API_KEY = os.environ.get('API_KEY')\n")  # reads the env: not a literal credential
     assert secret_findings(scan, start, sha()) == ["book-dev-dispatch.env", "cfg.txt", "settings.ini"]
+    # Source expressions are not literals; a quoted literal in code and a bare one in config still are.
+    start = sha()
+    commit("conf3.py", b"SECRET_KEY = secrets.token_hex(32)\nAPI_KEY = settings.OPENAI_API_KEY\n"
+                       b"DB_PASSWORD = os.environ['DB_PASSWORD_VALUE']\n")
+    commit("run.sh", b"export API_TOKEN=$(cat /run/secrets/token)\nSECRET_KEY=secrets.token_hex(32)\n")
+    commit("conf4.py", b'API_KEY = "abcdefghijklmnop1234"\n')
+    commit("prod.cfg", b"SERVICE_TOKEN=abcdefghijklmnopqrstuvwxyz012345  # prod\r\n")
+    assert secret_findings(scan, start, sha()) == ["conf4.py", "prod.cfg"], secret_findings(scan, start, sha())
     start = sha()
     sub_sha = sha()
     subprocess.run(["git", "-C", str(scan), "update-index", "--add", "--cacheinfo", f"160000,{sub_sha},vendor/lib"], check=True)
@@ -712,11 +721,12 @@ def planner_tests(tmp: Path) -> None:
     assert "`python -m pytest -q` -> expected: all tests pass" in spec and "- [ ] add GET /x" in spec
     child = subtask_ticket({"selected": {"task": {"id": 1, "title": "T"}, "repository": {"path": "/r"}}}, plan[0])
     assert child["selected"]["scope_paths"] == ["src/api/", "tests/test_api.py"]
-    assert child["selected"]["task"]["title"].startswith("[api]") and "add GET /x" in child["selected"]["task"]["description"]
+    assert child["selected"]["task"]["title"].startswith("[api]") and child["selected"]["brief"] == plan[0]["spec"]
+    assert child["selected"]["task"]["description"] == plan[0]["goal"]
 
-    # The builder prompt carries the (sub)task's brief, not only its title.
+    # The builder prompt carries the (sub)task's details, not only its title (the brief: build_review).
     prompt = build_prompt(child, mode="implement", branch="ai/x", worktree=tmp)
-    assert "add GET /x" in prompt and "## Acceptance criteria" in prompt
+    assert "API works for the list page" in prompt
 
     # The planner gets one retry with the reasons when its plan is thin; still thin -> no plan.
     from book_dev_ai_dispatch import run_planner
@@ -754,6 +764,19 @@ def planner_tests(tmp: Path) -> None:
     began = time.monotonic()
     out = run_child([sys.executable, "-c", "import time; time.sleep(60)"], timeout=1)
     assert out["status"] == "timeout" and time.monotonic() - began < 30
+    # A child that ignores SIGTERM: its builders (own sessions) die with it, not only its group.
+    marker = tmp / "grandchild.pid"
+    stubborn = ("import signal, subprocess, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "p = subprocess.Popen(['sleep', '300'], start_new_session=True, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                f"open({str(marker)!r}, 'w').write(str(p.pid)); time.sleep(300)")
+    with mock.patch("book_dev_ai_dispatch.CHILD_TERM_GRACE_SEC", 1):
+        out = run_child([sys.executable, "-c", stubborn], timeout=2)
+    grandchild = int(marker.read_text())
+    alive = Path(f"/proc/{grandchild}").exists() and " Z " not in Path(f"/proc/{grandchild}/stat").read_text()
+    if alive:
+        os.kill(grandchild, signal.SIGKILL)
+    assert out["status"] == "timeout" and not alive, out
 
     # Integration: plumbing combines disjoint subtask branches into one commit (parents: base + heads).
     repo = tmp / "integ"
@@ -898,6 +921,21 @@ def planner_tests(tmp: Path) -> None:
                 mock.patch("book_dev_ai_dispatch.run_provider", side_effect=one_flow):
             report = dispatch(**common)
         assert report["status"] == "dispatched" and "Planner's brief" in builds[0] and "add GET /x" in builds[0], report
+
+        # A parallel child gets its whole brief verbatim, however long: not the collapsed 6000-char description.
+        big = json.loads(json.dumps(good))
+        big["subtasks"] = big["subtasks"][:1]
+        big["subtasks"][0]["edge_cases"] = [f"edge case {i}: " + "x" * 300 for i in range(25)]
+        big["subtasks"][0]["stop_when"] = ["STOP-MARKER the schema differs from context"]
+        long_task = validate_plan(big)[0]
+        assert len(long_task["spec"]) > 7000
+        child_path = ticket_path.parent / "child-ticket.json"
+        child_path.write_text(json.dumps(subtask_ticket(json.loads(ticket_path.read_text()), long_task)))
+        builds.clear()
+        with mock.patch.dict(os.environ, {"BOOK_DEV_PLANNER": "none"}), \
+                mock.patch("book_dev_ai_dispatch.run_provider", side_effect=one_flow):
+            report = dispatch(**{**common, "ticket_path": child_path})
+        assert "STOP-MARKER" in builds[0] and "\n## Verification" in builds[0], builds[0][-1500:]
 
 
 def main() -> int:

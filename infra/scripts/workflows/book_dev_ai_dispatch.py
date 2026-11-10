@@ -78,6 +78,7 @@ PROVIDER_AUTH_ENV = {
     "codex": frozenset({"OPENAI_API_KEY", "CODEX_API_KEY"}),
 }
 # Credentials a builder must never commit: it can read files outside its write sandbox.
+CREDENTIAL_KEY = r"[A-Z0-9_]{0,64}(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]{0,64}"
 SECRET_CONTENT_RE = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_\w{20,}|\bsk-ant-[\w-]{20,}"
     r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bglpat-[\w-]{20,}"
@@ -85,8 +86,18 @@ SECRET_CONTENT_RE = re.compile(
     r"|\b[rs]k_live_[A-Za-z0-9]{20,}|\bAIza[0-9A-Za-z_-]{35}|\b\d{8,10}:AA[A-Za-z0-9_-]{30,}|\bre_[A-Za-z0-9]{8}_[A-Za-z0-9]{20,}"
     # URLs with an embedded password (scheme://user:password@host), e.g. a dotenv DATABASE_URL
     r"|\b[a-z][a-z0-9+.-]{1,20}://[^/\s:@]{1,64}:[^/\s@]{6,128}@[\w.-]+"
-    # dotenv-style assignment of a literal to a credential-named key (KEY=value at line start)
-    r"|(?m:^[ \t]*(?:export[ \t]+)?[A-Z0-9_]{0,64}(?:TOKEN|SECRET|API_?KEY|PASSWORD|PRIVATE_?KEY)[A-Z0-9_]{0,64}[ \t]*=[ \t]*['\"]?[A-Za-z0-9_+/.~:-]{16,})"
+    # A quoted literal assigned to a credential-named key at line start (any file: dotenv, shell,
+    # source code). An expression such as secrets.token_hex(32) or settings.API_KEY is not quoted.
+    r"|(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*['\"][A-Za-z0-9_+/.~:-]{16,}['\"])"
+)
+# An unquoted KEY=value line is a credential only outside source code, where `API_KEY = settings.X`
+# is an expression: dotenv, ini, shell and config files. The value must fill the rest of the line.
+DOTENV_LITERAL_BYTES_RE = re.compile(
+    (r"(?m:^[ \t]*(?:export[ \t]+)?" + CREDENTIAL_KEY + r"[ \t]*=[ \t]*[A-Za-z0-9_+/.~:-]{16,}[ \t]*(?:#.*)?\r?$)").encode()
+)
+SOURCE_CODE_RE = re.compile(
+    r"\.(py|pyi|js|mjs|cjs|ts|mts|cts|tsx|jsx|go|rs|java|kt|kts|scala|rb|php|cs|swift|c|h|cc|cpp|hpp|m|mm|dart"
+    r"|lua|ex|exs|vue|svelte|ipynb)$", re.IGNORECASE,
 )
 SECRET_FILE_RE = re.compile(
     # Basenames may hold any character but "/" (spaces included: "client certificate.p12").
@@ -515,26 +526,41 @@ def _children_of(parents: set[int]) -> set[int]:
 
 
 REAP_TIMEOUT_SEC = 10
+CHILD_TERM_GRACE_SEC = 60  # a subtask dispatcher's time to clean up after SIGTERM
 
 
-def _descendants() -> set[int]:
+def _alive(pids: set[int]) -> set[int]:
+    """The pids that still run: a zombie is dead, it only waits for its parent (below `root`, a
+    stopped subtask dispatcher) to reap it, which happens when that parent is killed."""
+    alive = set()
+    for pid in pids:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            continue
+        if stat[stat.rfind(")") + 2:].split()[:1] != ["Z"]:
+            alive.add(pid)
+    return alive
+
+
+def _descendants(root: int | None = None) -> set[int]:
     tree: set[int] = set()
-    frontier = {os.getpid()}
+    frontier = {os.getpid() if root is None else root}
     while frontier:
         frontier = _children_of(frontier) - tree
         tree |= frontier
     return tree
 
 
-def _kill_descendants() -> None:
-    """Freeze, then kill, everything below this dispatcher; raise if anything survives.
+def _kill_descendants(root: int | None = None) -> None:
+    """Freeze, then kill, everything below this dispatcher (or below `root`); raise if anything survives.
 
     SIGSTOP first, rescanning until the set stops growing, so a fork chain cannot outrun the
     scan; then SIGKILL the frozen tree and reap it."""
     for _ in range(20):
         frozen: set[int] = set()
         while True:
-            tree = _descendants()
+            tree = _descendants(root)
             fresh = tree - frozen
             if not fresh:
                 break
@@ -566,7 +592,7 @@ def _kill_descendants() -> None:
                 time.sleep(0.05)
         if waiting and any(Path(f"/proc/{pid}").exists() for pid in waiting):
             raise ContainmentError(f"{len(waiting)} builder process(es) did not exit after SIGKILL")
-    if _descendants():
+    if _alive(_descendants(root)):
         raise ContainmentError("builder processes survived the kill")
 
 
@@ -777,7 +803,8 @@ def secret_findings(worktree: Path, base: str, head: str) -> list[str]:
             blob = _git_bytes(worktree, "cat-file", "blob", f"{sha}:{path}")
             if blob.returncode != 0:
                 return [SECRET_SCAN_FAILED]
-            if SECRET_CONTENT_BYTES_RE.search(blob.stdout):
+            if SECRET_CONTENT_BYTES_RE.search(blob.stdout) or (
+                    not SOURCE_CODE_RE.search(path) and DOTENV_LITERAL_BYTES_RE.search(blob.stdout)):
                 hits.append(path)
     return hits
 
@@ -1212,7 +1239,10 @@ def subtask_ticket(ticket: dict[str, Any], subtask: dict[str, Any]) -> dict[str,
     selected = child.setdefault("selected", {})
     task = selected.setdefault("task", {})
     task["title"] = f"[{subtask['id']}] {subtask['title']}"
-    task["description"] = subtask["spec"]
+    task["description"] = subtask.get("goal") or subtask["title"]
+    # The full brief goes to the builder verbatim (build_review's plan note): the description is
+    # whitespace-collapsed and cut at 6000 characters in the prompt.
+    selected["brief"] = subtask["spec"]
     selected["scope_paths"] = subtask["paths"]
     return child
 
@@ -1332,6 +1362,7 @@ def build_review(
     scope = list(((ticket.get("selected") or {}).get("scope_paths")) or [])
     if scope:
         prompt += "\nScope: change only files under " + ", ".join(f"`{p}`" for p in scope) + "; anything else stops the run.\n"
+    plan_note = plan_note or (ticket.get("selected") or {}).get("brief")
     if plan_note:
         prompt += ("\nPlanner's brief: follow it step by step, write its tests first, run every verification\n"
                    "command and report the real output; on a stop condition, stop and say why.\n\n" f"{plan_note}\n")
@@ -1672,10 +1703,24 @@ def run_child(command: list[str], timeout: int) -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         proc.terminate()
         try:
-            proc.communicate(timeout=60)
+            proc.communicate(timeout=CHILD_TERM_GRACE_SEC)
         except subprocess.TimeoutExpired:
+            # The child did not clean up. Freeze it, then kill its whole tree before the child
+            # itself: builders run in their own sessions, so a group kill alone would miss them, and
+            # a dead child's orphans would reparent to this dispatcher among the other subtasks' trees.
+            error, status = f"subtask timed out after {timeout}s", "timeout"
+            try:
+                os.kill(proc.pid, signal.SIGSTOP)
+            except ProcessLookupError:
+                pass
+            try:
+                _kill_descendants(proc.pid)
+            except ContainmentError as exc:
+                error, status = f"{error}; {exc}", "failed"
             _kill_group(proc.pid)
+            proc.kill()
             proc.communicate()
+            return {"status": status, "error": error}
         return {"status": "timeout", "error": f"subtask timed out after {timeout}s"}
     try:
         return json.loads(stdout)
