@@ -30,6 +30,27 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(failover.decide(True, False, False), "none")
 
 
+class LocalOnlineTest(unittest.TestCase):
+    def test_instance_two_alone_counts_as_local(self) -> None:
+        runners = [
+            {"name": "local-sales-crm", "status": "offline"},
+            {"name": "local2-sales-crm", "status": "online"},
+            {"name": "railway-sales-crm", "status": "offline"},
+        ]
+        self.assertTrue(failover.any_local_online(runners))
+
+    def test_all_local_offline_is_down_even_with_railway_online(self) -> None:
+        runners = [
+            {"name": "local-sales-crm", "status": "offline"},
+            {"name": "local2-sales-crm", "status": "offline"},
+            {"name": "railway-sales-crm", "status": "online"},
+        ]
+        self.assertFalse(failover.any_local_online(runners))
+
+    def test_lookalike_names_do_not_count(self) -> None:
+        self.assertFalse(failover.any_local_online([{"name": "localhost-x", "status": "online"}]))
+
+
 class ReadRunnersTest(unittest.TestCase):
     def test_repo_and_org_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

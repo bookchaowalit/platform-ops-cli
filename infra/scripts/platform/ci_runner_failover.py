@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -97,8 +98,17 @@ def railway_deployment() -> dict | None:
     return None
 
 
+# Every local instance counts: local-<name> (instance 1) and local2-<name>, local3-... (run.sh
+# CI_RUNNER_INSTANCE). Railway is only needed when all of them are offline.
+LOCAL_RUNNER = re.compile(r"^local\d*-")
+
+
+def any_local_online(runners: list[dict]) -> bool:
+    return any(LOCAL_RUNNER.match(r["name"]) and r["status"] == "online" for r in runners)
+
+
 def local_online(canary: str) -> bool:
-    return any(r["name"].startswith("local-") and r["status"] == "online" for r in github_runners(canary))
+    return any_local_online(github_runners(canary))
 
 
 def railway_busy(entries: list[tuple[str, str]]) -> bool:
