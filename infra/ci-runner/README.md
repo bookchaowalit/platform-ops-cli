@@ -41,6 +41,12 @@ where it ran in parallel before). If Fedora is down, jobs wait in the queue (up 
 until someone runs `railway redeploy -s runner-multi` by hand. The watchdog below can do that restart on its
 own only after the owner sets `RAILWAY_TOKEN`.
 
+**Two runners per repository (2026-11-10):** a second container `ci-runner-local-2` runs the same
+`local/runners.txt` as `local2-<name>`, with its own registrations in `~/.local/share/ci-runner-local-2/config`
+(`CI_RUNNER_INSTANCE=2 ... ./run.sh up`). Both containers are limited to 6 GB each (12 GB of Fedora's 15)
+and 7 CPU each. The architecture-docs CI went from 12 min (all jobs one after another) to 7 min (two at a
+time). Adding a runner means running `run.sh up` for both instances.
+
 Railway runner-multi keeps its `railway-<name>` registrations as the fallback.
 `.github/workflows/ci-runner-failover.yml` (every 10 minutes, GitHub-hosted, environment
 `ci-runner-failover`) runs `infra/scripts/platform/ci_runner_failover.py`: if the first runner in

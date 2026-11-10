@@ -10,15 +10,20 @@
 # Run this script from the workstation (it needs gh + infisical for registration tokens) against
 # Fedora's Docker over SSH:
 #   eval "$(ssh-agent -s)"; ssh-add ~/.ssh/homelab_ed25519
-#   DOCKER_HOST=ssh://bookchaowalit@192.168.152.12 CI_RUNNER_MEMORY=12g CI_RUNNER_CPUS=7 \
-#     CI_RUNNER_SELINUX=1 ./run.sh up
+#   DOCKER_HOST=ssh://bookchaowalit@192.168.152.12 CI_RUNNER_MEMORY=6g CI_RUNNER_CPUS=7 \
+#     CI_RUNNER_SELINUX=1 ./run.sh up        # then again with CI_RUNNER_INSTANCE=2
 # $HOME/STATE is resolved on the workstation; the user name and home path are the same on Fedora.
 # Never start it on two hosts at once: both would use the same registrations.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 IMAGE=ci-runner-local
-CONTAINER=ci-runner-local
-STATE=${CI_RUNNER_STATE:-$HOME/.local/share/ci-runner-local}
+# CI_RUNNER_INSTANCE=2 runs a second, independent set of the same runners (container
+# ci-runner-local-2, names local2-<name>, own registrations), so each repository gets two runners
+# and its jobs run in parallel. Instance 1 (unset) keeps the original names.
+INSTANCE=${CI_RUNNER_INSTANCE:-}
+CONTAINER=ci-runner-local${INSTANCE:+-$INSTANCE}
+STATE=${CI_RUNNER_STATE:-$HOME/.local/share/ci-runner-local${INSTANCE:+-$INSTANCE}}
+PREFIX=local${INSTANCE}
 LABELS=self-hosted,linux,x64,railway,local
 RUNNERS=$(grep -v '^\s*#' "$here/runners.txt" | xargs)
 MEMORY=${CI_RUNNER_MEMORY:-8g}
@@ -27,7 +32,7 @@ CPUS=${CI_RUNNER_CPUS:-6}
 RW=${CI_RUNNER_SELINUX:+:Z}
 RO=:ro${CI_RUNNER_SELINUX:+,Z}
 
-common=(-e RUNNERS="$RUNNERS" -e LABELS="$LABELS" -e RUNNER_NAME_PREFIX=local -e JOB_CLEANUP=off
+common=(-e RUNNERS="$RUNNERS" -e LABELS="$LABELS" -e RUNNER_NAME_PREFIX="$PREFIX" -e JOB_CLEANUP=off
   -e DISABLE_AUTOMATIC_DEREGISTRATION=true -v "$STATE/config:/runner-config$RW")
 
 # GitHub API call with the right credentials: repo paths via the local gh token, org paths via
