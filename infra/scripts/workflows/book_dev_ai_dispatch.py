@@ -844,9 +844,9 @@ def install_dependencies(
             target = (tree / path).resolve()
             if target != root and root not in target.parents:
                 return {"status": "skipped", "reason": f"tracked symlink {_clean(path, 120)} leaves the checkout"}
-    targets = install_dirs(tree)
+    targets, why = install_dirs(tree)
     if targets is None:
-        return {"status": "skipped", "reason": "unreadable package-lock.json"}
+        return {"status": "skipped", "reason": why}
     for prefix in targets:
         place = (tree / prefix).resolve() if prefix else root
         if place != root and root not in place.parents:
@@ -876,13 +876,17 @@ def install_dependencies(
                 failure = _clean(done.stderr or done.stdout, 400) or f"npm ci exited {done.returncode}"
         except subprocess.TimeoutExpired:
             failure = f"npm ci timed out after {NPM_CI_TIMEOUT}s"
+        except ContainmentError as exc:
+            # A process npm started may still run and edit the checkout: the flow must stop.
+            return {"status": "unsafe", "error": f"npm processes could not be contained: {_clean(str(exc), 200)}"}
         except OSError as exc:
             failure = _clean(str(exc), 300)
     seconds = round(time.monotonic() - started, 1)
     # Whatever npm did before it finished, failed or was killed: put the tree back first.
     restored = _restore_after_install(tree, git_args)
     if restored is None:
-        return {"status": "failed", "seconds": seconds, "error": "npm changed files that could not be restored"}
+        # The checkout is no longer the commit: the flow must stop, not build or review on it.
+        return {"status": "unsafe", "seconds": seconds, "error": "npm changed files that could not be restored"}
     result: dict[str, Any] = (
         {"status": "failed", "seconds": seconds, "error": failure} if failure
         else {"status": "installed", "seconds": seconds}
@@ -912,24 +916,41 @@ def _restore_after_install(tree: Path, git_args: tuple[str, ...]) -> list[str] |
     return restored
 
 
-def install_dirs(tree: Path) -> list[str] | None:
-    """Every directory (`""` is the root, else `packages/a/`) whose node_modules the lockfile fills."""
+def install_dirs(tree: Path) -> tuple[list[str] | None, str]:
+    """Every directory (`""` is the root, else `packages/a/`) whose node_modules the lockfile fills.
+
+    Returns (None, reason) for a lockfile that cannot be checked in full: unreadable, v1 (no
+    `packages` map to read install paths from), or a `link` / `file:` entry that leaves the checkout."""
     try:
         lock = json.loads((tree / "package-lock.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return None, "unreadable package-lock.json"
     if not isinstance(lock, dict):
-        return None
-    packages = lock.get("packages") or {}
-    if not isinstance(packages, dict):
-        return None
+        return None, "unreadable package-lock.json"
+    packages = lock.get("packages")
+    if not isinstance(lock.get("lockfileVersion"), int) or lock["lockfileVersion"] < 2 or not isinstance(packages, dict):
+        return None, "package-lock.json v1 cannot be checked; regenerate it with npm 7 or later"
+    root = tree.resolve()
     found = {""}
-    for key in packages:
-        if isinstance(key, str) and "node_modules/" in key:
+    for key, entry in packages.items():
+        if not isinstance(key, str):
+            return None, "unreadable package-lock.json"
+        if "node_modules/" in key:
             found.add(key[:key.find("node_modules/")])
-        elif isinstance(key, str) and key:  # a workspace package installs into its own node_modules too
+        elif key:  # a workspace package installs into its own node_modules too
             found.add(key.rstrip("/") + "/")
-    return sorted(found)
+        resolved = entry.get("resolved") if isinstance(entry, dict) else None
+        local = None
+        if isinstance(resolved, str) and isinstance(entry, dict) and entry.get("link"):
+            local = resolved
+        elif isinstance(resolved, str) and resolved.startswith("file:"):
+            local = resolved[len("file:"):]
+        if local is not None:
+            # npm links or copies a local package and chmods its bins: it must stay inside.
+            target = (tree / local).resolve()
+            if target != root and root not in target.parents:
+                return None, f"package-lock.json links {_clean(key, 120)} outside the checkout"
+    return sorted(found), ""
 
 
 def dependency_note(install: dict[str, Any] | None) -> str:
@@ -1642,6 +1663,9 @@ def build_review(
     pinned = (f"--git-dir={gitdir}", f"--work-tree={worktree}")
     # The tree is the base here, or the combined subtasks' head, whose manifests must match the base.
     flow["dependencies"] = {"build": install_dependencies(worktree, unchanged_since=base, git_args=safe)}
+    if flow["dependencies"]["build"]["status"] == "unsafe":
+        flow["worktree_kept"] = True
+        return "failed", results, {**flow, "error": flow["dependencies"]["build"]["error"]}
     deps_note = dependency_note(flow["dependencies"]["build"])
 
     def wt(*args: str) -> subprocess.CompletedProcess[str]:
@@ -1793,6 +1817,9 @@ def build_review(
             try:
                 installed = install_dependencies(review_tree, unchanged_since=base, git_args=safe)
                 flow["dependencies"][f"review-{round_no}"] = installed
+                if installed["status"] == "unsafe":
+                    flow["worktree_kept"] = True
+                    return "failed", results, {**flow, "error": installed["error"]}
                 review_prompt = build_review_prompt(
                     ticket, base=base, head=head, branch=branch, deps=dependency_note(installed)
                 )
