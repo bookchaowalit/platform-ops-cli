@@ -1066,7 +1066,7 @@ def dependency_tests(tmp: Path) -> None:
 
         # A changed manifest anywhere in the tree (workspace package.json, shrinkwrap, nested .npmrc) blocks the install.
         base_sha = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        for changed in ("npm-shrinkwrap.json", "packages/a/package.json", "packages/a/.npmrc", "package-lock.json"):
+        for changed in ("npm-shrinkwrap.json", "packages/a/package.json", "packages/a/.npmrc", "package-lock.json", ".NPMRC"):
             subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
             shutil.rmtree(app / "node_modules", ignore_errors=True)
             (app / changed).parent.mkdir(parents=True, exist_ok=True)

@@ -790,7 +790,7 @@ NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "-
 # A tree that changes one of these, at any depth, is left without an install: its lockfile,
 # workspace manifest or registry config is the builder's, not the owner's.
 DEPENDENCY_MANIFESTS = tuple(
-    f":(glob)**/{name}" for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
+    f":(glob,icase)**/{name}" for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
 )
 
 
