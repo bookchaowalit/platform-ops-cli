@@ -1138,6 +1138,16 @@ def dependency_tests(tmp: Path) -> None:
         tree = tmp / "bin-chmod"
         assert not subprocess.run(["git", "-C", str(tree), "status", "--porcelain"], capture_output=True, text=True).stdout
         assert (tree / "node_modules" / "react").is_dir(), "the ignored install survives the restore"
+        # Codex review 2026-11-11: files npm changed before a failure or timeout are restored too.
+        for name, tail in (("bin-fail", "exit 1\n"), ("bin-hang", "sleep 300\n")):
+            fake_npm.write_text("#!/bin/sh\nchmod +x packages/a/cli.js; echo stray > stray.txt\n" + tail)
+            with mock.patch.object(d, "NPM_CI_TIMEOUT", 1):
+                broken = variant(name, {**base_files, ".gitignore": "node_modules/\n",
+                                        "packages/a/package.json": '{"bin": "cli.js"}', "packages/a/cli.js": "x"})
+            assert broken["status"] == "failed" and broken["restored"] == ["packages/a/cli.js", "stray.txt"], broken
+            assert not subprocess.run(["git", "-C", str(tmp / name), "status", "--porcelain"],
+                                      capture_output=True, text=True).stdout, name
+        fake_npm.write_text(fake_npm_text)
         assert variant("bad-lock", {"package.json": "{}", "package-lock.json": "{", ".gitignore": "node_modules/\n"})[
             "reason"] == "unreadable package-lock.json"
         ok = variant("workspaces", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"})
