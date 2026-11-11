@@ -782,6 +782,78 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(["git", *args], 124, "", f"git {args[0]} timed out after 120s")
 
 
+# Builders and the reviewer run with the network off, so a tree without node_modules cannot
+# run `node --test` or a build. The dispatcher installs from the lockfile first.
+NPM_CI_ENV = "BOOK_DEV_NPM_CI"  # "0" turns the install off
+NPM_CI_TIMEOUT = 900
+NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline")
+# A tree that changes one of these, at any depth, is left without an install: its lockfile,
+# workspace manifest or registry config is the builder's, not the owner's.
+DEPENDENCY_MANIFESTS = tuple(
+    f":(glob,icase)**/{name}" for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
+)
+
+
+def install_dependencies(
+    tree: Path, *, unchanged_since: str | None = None, git_args: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Run `npm ci --ignore-scripts` in a checkout before an agent works or reviews there.
+
+    No package or project script runs, and the environment loses its credentials. It only runs
+    when package-lock.json exists and node_modules is git-ignored, so the install never shows up
+    as an edit. git_args carries the caller's hook and filter overrides. With unchanged_since (the base), a checkout whose dependency manifests differ
+    from the base is left without an install. A failed install never stops the flow."""
+    if os.environ.get(NPM_CI_ENV, "1").strip() == "0":
+        return {"status": "skipped", "reason": f"{NPM_CI_ENV}=0"}
+    if not (tree / "package-lock.json").is_file():
+        return {"status": "skipped", "reason": "no package-lock.json"}
+    if (tree / "node_modules").exists() or (tree / "node_modules").is_symlink():
+        # Only Git could have put it there: it is the branch's, never trusted as an install.
+        return {"status": "skipped", "reason": "node_modules is committed in the branch"}
+    if _git(tree, *git_args, "check-ignore", "-q", "node_modules/").returncode != 0:
+        return {"status": "skipped", "reason": "node_modules is not git-ignored"}
+    if unchanged_since:
+        moved = _git(
+            tree, *git_args, "diff", "--quiet", "--no-ext-diff", "--no-textconv", unchanged_since, "HEAD",
+            "--", *DEPENDENCY_MANIFESTS,
+        )
+        if moved.returncode != 0:
+            return {"status": "skipped", "reason": "the branch changes dependency manifests"}
+    npm = shutil.which("npm")
+    if not npm:
+        return {"status": "skipped", "reason": "npm not found"}
+    env = {
+        name: value for name, value in os.environ.items()
+        if not (CREDENTIAL_ENV_RE.search(name.upper()) or URL_CREDENTIAL_RE.search(value))
+    }
+    started = time.monotonic()
+    try:
+        done = subprocess.run(
+            [npm, *NPM_CI_COMMAND[1:]], cwd=str(tree), env=env, capture_output=True, text=True,
+            check=False, timeout=NPM_CI_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "failed", "error": f"npm ci timed out after {NPM_CI_TIMEOUT}s"}
+    except OSError as exc:
+        return {"status": "failed", "error": _clean(str(exc), 300)}
+    seconds = round(time.monotonic() - started, 1)
+    if done.returncode != 0:
+        return {"status": "failed", "seconds": seconds, "error": _clean(done.stderr or done.stdout, 400)}
+    return {"status": "installed", "seconds": seconds}
+
+
+def dependency_note(install: dict[str, Any] | None) -> str:
+    """One prompt line that tells the agent whether the checkout's dependencies are there."""
+    if not install or install.get("reason") == "no package-lock.json":
+        return ""
+    if install["status"] == "installed":
+        return ("\nDependencies: the dispatcher ran `npm ci --ignore-scripts` in this checkout, so run the\n"
+                "test and build commands; do not install anything (the network is off).\n")
+    why = install.get("reason") or install.get("error") or install["status"]
+    return (f"\nDependencies are not installed ({_clean(why, 200)}) and the network is off: name each\n"
+            "check you could not run instead of guessing its result.\n")
+
+
 SECRET_CONTENT_BYTES_RE = re.compile(SECRET_CONTENT_RE.pattern.encode())
 SECRET_SCAN_MAX_BLOB = 20 * 1024 * 1024
 SECRET_SCAN_MAX_COMMITS = 200
@@ -942,7 +1014,7 @@ def _branch_name(ticket: dict[str, Any], stamp: str) -> str:
     return f"ai/{slug}-{stamp.lower()}"
 
 
-def build_review_prompt(ticket: dict[str, Any], *, base: str, head: str, branch: str) -> str:
+def build_review_prompt(ticket: dict[str, Any], *, base: str, head: str, branch: str, deps: str = "") -> str:
     task = ((ticket.get("selected") or {}).get("task") or {})
     return f"""You are the independent reviewer for a change another model wrote.
 Do not edit files, commit, push or run anything that changes state.
@@ -958,7 +1030,7 @@ evidence and a suggested fix. Blocking means a correctness, security, data-loss
 or acceptance-criteria failure; style alone is non-blocking.
 End with exactly one line: `VERDICT: PASS` (no blocking findings) or
 `VERDICT: BLOCKING`.
-"""
+{deps}"""
 
 
 def build_fix_prompt(base_prompt: str, review: str, round_no: int, builder_commits: bool = True) -> str:
@@ -1472,6 +1544,9 @@ def build_review(
     if not gitdir.is_dir():
         return "failed", results, {**flow, "error": "could not resolve the worktree gitdir"}
     pinned = (f"--git-dir={gitdir}", f"--work-tree={worktree}")
+    # The tree is the base here, or the combined subtasks' head, whose manifests must match the base.
+    flow["dependencies"] = {"build": install_dependencies(worktree, unchanged_since=base, git_args=safe)}
+    deps_note = dependency_note(flow["dependencies"]["build"])
 
     def wt(*args: str) -> subprocess.CompletedProcess[str]:
         # No hooks, fsmonitor, signing or filter program on any git call over the builder's tree.
@@ -1486,9 +1561,13 @@ def build_review(
             text = build_plan_fix_prompt(prompt, plan, round_no, builder_commits)
         else:
             text = prompt if review is None else build_fix_prompt(prompt, review, round_no, builder_commits)
+        text += deps_note
         label = f"{builder}-build" if review is None else f"{builder}-fix-{round_no}"
         # Grok reads --prompt-file, so each round gets its own file.
-        round_file = prompt_file if review is None else write_prompt_file(text, dispatch_dir, f"{label}.prompt.md")
+        round_file = (
+            write_prompt_file(text, dispatch_dir) if review is None and plan is None
+            else write_prompt_file(text, dispatch_dir, f"{label}.prompt.md")
+        )
         result = run_provider(
             builder, prompt=text, prompt_file=round_file, mode="implement", dry_run=False,
             cwd=worktree, label=label, guard="branch", model=builder_model, effort=builder_effort, **common,
@@ -1611,12 +1690,16 @@ def build_review(
         # new private temp dir, so nothing the builder left outside Git, or a
         # file planted where the review output lands, can reach the verdict.
         label = f"{reviewer}-review-{round_no}"
-        review_prompt = build_review_prompt(ticket, base=base, head=head, branch=branch)
         with tempfile.TemporaryDirectory(prefix="book-dev-review-") as private:
             review_tree = Path(private) / "checkout"
             if _git(repo_dir, *safe, "worktree", "add", "--detach", str(review_tree), head).returncode != 0:
                 return "failed", results, {**flow, "error": "could not create review checkout"}
             try:
+                installed = install_dependencies(review_tree, unchanged_since=base, git_args=safe)
+                flow["dependencies"][f"review-{round_no}"] = installed
+                review_prompt = build_review_prompt(
+                    ticket, base=base, head=head, branch=branch, deps=dependency_note(installed)
+                )
                 review = run_provider(
                     reviewer, prompt=review_prompt,
                     prompt_file=write_prompt_file(review_prompt, Path(private), "prompt.md"),

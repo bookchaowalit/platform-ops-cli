@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1008,6 +1009,125 @@ def description_tests(tmp: Path) -> None:
     assert f"\n{d.TRUNCATED_MARK}\n" in review and "ก" * (d.DESCRIPTION_LIMIT + 1) not in review, review[-200:]
 
 
+def dependency_tests(tmp: Path) -> None:
+    """The dispatcher runs `npm ci --ignore-scripts` before the builder and in each review checkout."""
+    import book_dev_ai_dispatch as d
+
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    npm_log = tmp / "npm.log"
+    fake_npm = bin_dir / "npm"
+    fake_npm.write_text(
+        "#!/bin/sh\n"
+        f'echo "$PWD|$*|${{GH_TOKEN:-none}}" >> "{npm_log}"\n'
+        'if [ -n "$FAKE_NPM_FAIL" ]; then echo "registry down" >&2; exit 1; fi\n'
+        "mkdir -p node_modules/react && echo ok > node_modules/react/index.js\n"
+    )
+    fake_npm.chmod(0o755)
+    saved = {name: os.environ.get(name) for name in ("PATH", "GH_TOKEN", d.NPM_CI_ENV, "FAKE_NPM_FAIL")}
+    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+    os.environ["GH_TOKEN"] = "ghp_should_not_reach_npm"
+    os.environ.pop(d.NPM_CI_ENV, None)
+    try:
+        app = tmp / "app"
+        git_repo(app)
+        assert d.install_dependencies(app) == {"status": "skipped", "reason": "no package-lock.json"}
+        assert d.dependency_note(d.install_dependencies(app)) == ""
+        (app / "package.json").write_text("{}")
+        (app / "package-lock.json").write_text("{}")
+        assert d.install_dependencies(app)["reason"] == "node_modules is not git-ignored", "an install would dirty the tree"
+        (app / ".gitignore").write_text("node_modules/\n")
+        subprocess.run(["git", "-C", str(app), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(app), "commit", "-q", "-m", "deps"], check=True)
+        os.environ[d.NPM_CI_ENV] = "0"
+        assert d.install_dependencies(app)["status"] == "skipped"
+        os.environ.pop(d.NPM_CI_ENV)
+        os.environ["FAKE_NPM_FAIL"] = "1"
+        failed = d.install_dependencies(app)
+        assert failed["status"] == "failed" and "registry down" in failed["error"], failed
+        assert "not installed" in d.dependency_note(failed) and "registry down" in d.dependency_note(failed)
+        os.environ.pop("FAKE_NPM_FAIL")
+        done = d.install_dependencies(app)
+        assert done["status"] == "installed", done
+        line = npm_log.read_text().splitlines()[-1]
+        assert line.split("|")[1] == "ci --ignore-scripts --no-audit --no-fund --prefer-offline", line
+        assert line.endswith("|none"), "credentials are scrubbed from the npm environment"
+        assert "npm ci --ignore-scripts" in d.dependency_note(done)
+        assert not subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True).stdout
+        assert d.install_dependencies(app)["reason"] == "node_modules is committed in the branch"
+        assert "not installed" in d.dependency_note(d.install_dependencies(app)), "never claims an install it did not run"
+        with mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, "", ""), subprocess.TimeoutExpired("npm", 1)
+        ]):
+            (app / "node_modules" / "react" / "index.js").unlink()
+            (app / "node_modules" / "react").rmdir()
+            (app / "node_modules").rmdir()
+            assert "timed out" in d.install_dependencies(app)["error"]
+
+        # A changed manifest anywhere in the tree (workspace package.json, shrinkwrap, nested .npmrc) blocks the install.
+        base_sha = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        for changed in ("npm-shrinkwrap.json", "packages/a/package.json", "packages/a/.npmrc", "package-lock.json", ".NPMRC"):
+            subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
+            shutil.rmtree(app / "node_modules", ignore_errors=True)
+            (app / changed).parent.mkdir(parents=True, exist_ok=True)
+            (app / changed).write_text('{"x": 1}')
+            subprocess.run(["git", "-C", str(app), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(app), "commit", "-q", "-m", changed], check=True)
+            gated = d.install_dependencies(app, unchanged_since=base_sha)
+            assert gated["reason"] == "the branch changes dependency manifests", (changed, gated)
+        subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
+        assert d.install_dependencies(app, unchanged_since=base_sha)["status"] == "installed"
+
+        # The flow: deps in the builder's worktree and in every review checkout of an unchanged lockfile.
+        ticket_path = sample_ticket(tmp / "flow")
+        repo = tmp / "flow" / "repo"
+        (repo / ".git").rmdir()
+        git_repo(repo)
+        for name, text in (("package.json", "{}"), ("package-lock.json", "{}"), (".gitignore", "node_modules/\n")):
+            (repo / name).write_text(text)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "deps"], check=True)
+        origin = tmp / "flow" / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "-q", "origin", "main"], check=True)
+        common = dict(ticket_path=ticket_path, providers=["claude"], mode="implement", write_ticket=False, reviewer="codex")
+        opened = {"status": "opened", "url": "https://github.com/o/r/pull/1"}
+        for stamp, files, review_deps in (("20261111T000001Z", (), True), ("20261111T000002Z", ("package-lock.json",), False)):
+            run, calls = fake_provider(["PASS"], files=files)
+            seen: list[bool] = []
+
+            def recording(provider, **kwargs):
+                seen.append((kwargs["cwd"] / "node_modules" / "react").is_dir())
+                return run(provider, **kwargs)
+
+            with mock.patch("book_dev_ai_dispatch._now_stamp", return_value=stamp), \
+                    mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), \
+                    mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]), \
+                    mock.patch("book_dev_ai_dispatch.run_provider", side_effect=recording), \
+                    mock.patch("book_dev_ai_dispatch.open_pull_request", return_value=opened):
+                report = dispatch(**common)
+            assert report["status"] == "dispatched", report
+            deps = report["flow"]["dependencies"]
+            assert deps["build"]["status"] == "installed", deps
+            assert seen[0], "the builder starts with node_modules"
+            assert "npm ci --ignore-scripts" in calls[0]["prompt"] and "npm ci --ignore-scripts" in calls[0]["prompt_file"]
+            if review_deps:
+                assert seen[1] and deps["review-0"]["status"] == "installed", deps
+                assert "npm ci --ignore-scripts" in calls[1]["prompt"]
+            else:
+                # A builder-changed lockfile is never installed before the review.
+                assert not seen[1] and deps["review-0"]["reason"] == "the branch changes dependency manifests", deps
+                assert "not installed" in calls[1]["prompt"]
+            assert not calls[0]["cwd"].exists(), "worktree with ignored node_modules is still removed after the PR"
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 def main() -> int:
     assert parse_providers("grok,codex") == ["grok", "codex"]
     assert parse_providers("codex,codex,grok") == ["codex", "grok"]
@@ -1161,6 +1281,8 @@ def main() -> int:
         description_tests(Path(temp_dir))
     with tempfile.TemporaryDirectory() as temp_dir:
         planner_tests(Path(temp_dir))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dependency_tests(Path(temp_dir))
 
     # Git and gh timeouts come back as results, so the flow still writes its report.
     from book_dev_ai_dispatch import _git
