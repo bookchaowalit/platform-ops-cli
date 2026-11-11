@@ -46,12 +46,34 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "runtime" / "agent-loop" / "book-de
 SKIP_DIRS = {".git", "node_modules", ".next", "dist", "build", "coverage", ".dart_tool"}
 REPO_REF_RE = re.compile(r"\[Book Dev\]\s+([^\s—]+/[^\s—]+)")
 MAX_UNMATCHED = 50
+# Task descriptions carry the acceptance checklist the planner, builder and reviewer work from, so
+# they keep their lines and get a generous cap (Thai is ~3 bytes per character).
+DESCRIPTION_LIMIT = 12_000
+TRUNCATED_MARK = "(truncated)"
 
 
 def _clean(value: Any, limit: int = 280) -> str:
     """Return one bounded, whitespace-normalized text value."""
 
     return " ".join(str(value or "").split())[:limit].rstrip()
+
+
+def _clean_block(value: Any, limit: int = DESCRIPTION_LIMIT) -> str:
+    """Return multi-line text with each line's whitespace normalized and blank runs collapsed.
+
+    Line breaks survive so a markdown checklist stays one item per line. When the text exceeds
+    ``limit`` characters it is cut and ends with an explicit ``(truncated)`` marker.
+    """
+
+    lines: list[str] = []
+    for raw in str(value or "").splitlines():
+        line = " ".join(raw.split())
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    text = "\n".join(lines).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n{TRUNCATED_MARK}"
 
 
 def _run_git(repo: Path, args: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -252,7 +274,7 @@ def build_candidate(
         "task": {
             "id": task["id"],
             "title": _clean(task["title"]),
-            "description": _clean(task.get("description"), 600),
+            "description": _clean_block(task.get("description")),
             "status": task["status"],
             "priority": task["priority"],
             "project": _clean(task.get("project"), 120),

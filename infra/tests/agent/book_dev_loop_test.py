@@ -10,6 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "workflows"))
 from book_dev_loop import (  # noqa: E402
+    DESCRIPTION_LIMIT,
+    TRUNCATED_MARK,
+    build_candidate,
     build_report,
     extract_repo_ref,
     render_markdown,
@@ -45,7 +48,25 @@ def repo(ref: str, state: str = "clean", dirty: bool = False) -> dict:
     }
 
 
+def description_tests() -> None:
+    """A long Thai Linear checklist keeps every line in the candidate; only past the cap is it marked cut."""
+    items = [f"- [ ] {n}. แก้ปัญหา UX ข้อที่ {n}: " + "ตรวจทุกหน้าที่ 375/768/1440 " * 20 for n in range(1, 7)]
+    description = "\n".join(["Linear BOO-394: https://linear.app/x", "", "## ต้องแก้", *items])
+    assert len(description) > 600
+    item = task(9, "[Book Dev] bookchaowalit/site — fix UX")
+    item["description"] = description
+    kept = build_candidate(item, [])["task"]["description"]
+    for line in items:
+        assert line.strip() in kept.splitlines(), line[:40]
+    assert TRUNCATED_MARK not in kept
+
+    item["description"] = "ก" * (DESCRIPTION_LIMIT + 10)
+    cut = build_candidate(item, [])["task"]["description"]
+    assert cut.endswith(f"\n{TRUNCATED_MARK}") and len(cut) <= DESCRIPTION_LIMIT + len(TRUNCATED_MARK) + 1
+
+
 def main() -> int:
+    description_tests()
     assert extract_repo_ref("[Book Dev] bookchaowalit/career-job-scraper — review dirty changes") == "bookchaowalit/career-job-scraper"
     assert extract_repo_ref("[Book Dev] missing mapping") is None
 
