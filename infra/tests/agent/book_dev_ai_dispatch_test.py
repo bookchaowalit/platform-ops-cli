@@ -1053,7 +1053,7 @@ def dependency_tests(tmp: Path) -> None:
         done = d.install_dependencies(app)
         assert done["status"] == "installed", done
         line = npm_log.read_text().splitlines()[-1]
-        assert line.split("|")[1] == "ci --ignore-scripts --no-audit --no-fund --prefer-offline", line
+        assert line.split("|")[1] == "ci --ignore-scripts --include=dev --no-audit --no-fund --prefer-offline", line
         assert line.split("|")[2:] == ["none", "0"], "no credentials, and the user and global npmrc are empty"
         assert "npm ci --ignore-scripts" in d.dependency_note(done)
         assert not subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True).stdout

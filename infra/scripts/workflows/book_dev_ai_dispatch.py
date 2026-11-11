@@ -790,7 +790,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 # Builders and the reviewer run with the network off, so a tree without node_modules cannot
 # run `node --test` or a build. The dispatcher installs from the lockfile first.
 NPM_CI_ENV = "BOOK_DEV_NPM_CI"  # "0" turns the install off
-NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline")
+NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--include=dev", "--no-audit", "--no-fund", "--prefer-offline")
 # A tree that changes one of these, at any depth, is left without an install: its lockfile,
 # workspace manifest or registry config is the builder's, not the owner's.
 MANIFEST_NAMES = ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
