@@ -126,17 +126,22 @@ PLAN_ATTEMPTS = 2  # the split plan, plus one retry when it is thin
 # and the escalated round, plus the escalation fix plan.
 FLOW_RUNS = 2 * (MAX_FIX_ROUNDS + 2) + 1
 RUN_MARGIN_SEC = 600  # git, push, PR creation and the Linear calls around a run
+# `npm ci` runs once in the build worktree and once per review checkout (every round plus the
+# escalated one); each install has its own timeout.
+NPM_CI_TIMEOUT = 600
+INSTALL_RUNS = MAX_FIX_ROUNDS + 3
 
 
 def child_timeout_sec(timeout_sec: int) -> int:
-    """A parallel subtask's dispatcher: one whole flow."""
-    return timeout_sec * FLOW_RUNS + RUN_MARGIN_SEC
+    """A parallel subtask's dispatcher: one whole flow, its CLI runs and its installs."""
+    return timeout_sec * FLOW_RUNS + NPM_CI_TIMEOUT * INSTALL_RUNS + RUN_MARGIN_SEC
 
 
 def worst_case_seconds(timeout_sec: int) -> int:
     """The longest a planned job can take when every CLI run uses its full timeout: the plan and its
     retry, the parallel children, then the combined change's flow (it starts at a review)."""
-    return timeout_sec * PLAN_ATTEMPTS + child_timeout_sec(timeout_sec) + timeout_sec * (FLOW_RUNS - 1) + RUN_MARGIN_SEC
+    return (timeout_sec * PLAN_ATTEMPTS + child_timeout_sec(timeout_sec) + timeout_sec * (FLOW_RUNS - 1)
+            + NPM_CI_TIMEOUT * INSTALL_RUNS + RUN_MARGIN_SEC)
 # Files an agent CLI may load as instructions. The reviewer runs with project
 # docs disabled; a branch touching any of these still goes to the owner unreviewed.
 AGENT_INSTRUCTION_RE = re.compile(
@@ -785,7 +790,6 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 # Builders and the reviewer run with the network off, so a tree without node_modules cannot
 # run `node --test` or a build. The dispatcher installs from the lockfile first.
 NPM_CI_ENV = "BOOK_DEV_NPM_CI"  # "0" turns the install off
-NPM_CI_TIMEOUT = 900
 NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline")
 # A tree that changes one of these, at any depth, is left without an install: its lockfile,
 # workspace manifest or registry config is the builder's, not the owner's.
@@ -800,9 +804,12 @@ def install_dependencies(
     """Run `npm ci --ignore-scripts` in a checkout before an agent works or reviews there.
 
     No package or project script runs, and the environment loses its credentials. It only runs
-    when package-lock.json exists and node_modules is git-ignored, so the install never shows up
-    as an edit. git_args carries the caller's hook and filter overrides. With unchanged_since (the base), a checkout whose dependency manifests differ
-    from the base is left without an install. A failed install never stops the flow."""
+    when package-lock.json exists, no node_modules is tracked anywhere, every directory the
+    lockfile installs into stays inside the checkout and has its node_modules git-ignored, so the
+    install never shows up as an edit or writes outside the tree. git_args carries the caller's
+    hook and filter overrides. With unchanged_since (the base), a checkout whose dependency
+    manifests differ from the base is left without an install. A failed install never stops the
+    flow."""
     if os.environ.get(NPM_CI_ENV, "1").strip() == "0":
         return {"status": "skipped", "reason": f"{NPM_CI_ENV}=0"}
     if not (tree / "package-lock.json").is_file():
@@ -810,8 +817,6 @@ def install_dependencies(
     if (tree / "node_modules").exists() or (tree / "node_modules").is_symlink():
         # Only Git could have put it there: it is the branch's, never trusted as an install.
         return {"status": "skipped", "reason": "node_modules is committed in the branch"}
-    if _git(tree, *git_args, "check-ignore", "-q", "node_modules/").returncode != 0:
-        return {"status": "skipped", "reason": "node_modules is not git-ignored"}
     if unchanged_since:
         moved = _git(
             tree, *git_args, "diff", "--quiet", "--no-ext-diff", "--no-textconv", unchanged_since, "HEAD",
@@ -819,6 +824,22 @@ def install_dependencies(
         )
         if moved.returncode != 0:
             return {"status": "skipped", "reason": "the branch changes dependency manifests"}
+    listed = _git(tree, *git_args, "ls-files", "-z")
+    if listed.returncode != 0:
+        return {"status": "skipped", "reason": "could not list tracked files"}
+    if any("node_modules" in part.lower().split("/") for part in listed.stdout.split("\0") if part):
+        # npm would read, replace or delete through a committed (or symlinked) workspace node_modules.
+        return {"status": "skipped", "reason": "node_modules is committed in the branch"}
+    targets = install_dirs(tree)
+    if targets is None:
+        return {"status": "skipped", "reason": "unreadable package-lock.json"}
+    root = tree.resolve()
+    for prefix in targets:
+        place = (tree / prefix).resolve() if prefix else root
+        if place != root and root not in place.parents:
+            return {"status": "skipped", "reason": f"install dir {prefix or '.'} leaves the checkout"}
+        if _git(tree, *git_args, "check-ignore", "-q", f"{prefix}node_modules/").returncode != 0:
+            return {"status": "skipped", "reason": f"{prefix}node_modules is not git-ignored"}
     npm = shutil.which("npm")
     if not npm:
         return {"status": "skipped", "reason": "npm not found"}
@@ -840,6 +861,26 @@ def install_dependencies(
     if done.returncode != 0:
         return {"status": "failed", "seconds": seconds, "error": _clean(done.stderr or done.stdout, 400)}
     return {"status": "installed", "seconds": seconds}
+
+
+def install_dirs(tree: Path) -> list[str] | None:
+    """Every directory (`""` is the root, else `packages/a/`) whose node_modules the lockfile fills."""
+    try:
+        lock = json.loads((tree / "package-lock.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(lock, dict):
+        return None
+    packages = lock.get("packages") or {}
+    if not isinstance(packages, dict):
+        return None
+    found = {""}
+    for key in packages:
+        if isinstance(key, str) and "node_modules/" in key:
+            found.add(key[:key.find("node_modules/")])
+        elif isinstance(key, str) and key:  # a workspace package installs into its own node_modules too
+            found.add(key.rstrip("/") + "/")
+    return sorted(found)
 
 
 def dependency_note(install: dict[str, Any] | None) -> str:
