@@ -1162,7 +1162,20 @@ def dependency_tests(tmp: Path) -> None:
                             ("lock-file", {"resolved": f"file:{outside}"})):
             out = variant(name, {**ignore, "package-lock.json": json.dumps(
                 {"lockfileVersion": 3, "packages": {"": {}, "node_modules/tool": entry}})})
-            assert out["reason"] == "package-lock.json links node_modules/tool outside the checkout", (name, out)
+            assert out["reason"] == "package-lock.json has a local package node_modules/tool that is not a workspace link", out
+        # Security review 2026-11-11: odd paths, non-workspace local packages and a shrinkwrap are refused.
+        for name, packages, reason in (
+            ("key-dotdot", {"": {}, "../x/node_modules/y": {}}, "not a plain relative path"),
+            ("key-abs", {"": {}, "/tmp/node_modules/y": {}}, "not a plain relative path"),
+            ("key-backslash", {"": {}, "a\\..\\..\\x": {}}, "not a plain relative path"),
+            ("link-tilde", {"": {}, "node_modules/t": {"resolved": "~/x", "link": True}}, "not a workspace link"),
+            ("link-unlisted", {"": {}, "node_modules/t": {"resolved": "tools/t", "link": True}}, "not a workspace link"),
+            ("file-inside", {"": {}, "node_modules/t": {"resolved": "file:tools/t"}}, "not a workspace link"),
+        ):
+            odd = variant(name, {**ignore, "package-lock.json": json.dumps({"lockfileVersion": 3, "packages": packages})})
+            assert reason in odd.get("reason", ""), (name, odd)
+        shrink = variant("shrinkwrap", {**ignore, "package-lock.json": lock, "npm-shrinkwrap.json": "{}"})
+        assert shrink["reason"] == "npm-shrinkwrap.json is not supported", shrink
         inside_link = variant("lock-link-inside", {**ignore, "tools/t/package.json": "{}", "package-lock.json": json.dumps(
             {"lockfileVersion": 3, "packages": {"": {}, "tools/t": {}, "node_modules/t": {"resolved": "tools/t", "link": True}}})})
         assert inside_link["status"] == "installed", inside_link

@@ -844,6 +844,9 @@ def install_dependencies(
             target = (tree / path).resolve()
             if target != root and root not in target.parents:
                 return {"status": "skipped", "reason": f"tracked symlink {_clean(path, 120)} leaves the checkout"}
+    if (tree / "npm-shrinkwrap.json").exists() or (tree / "npm-shrinkwrap.json").is_symlink():
+        # npm would install from the shrinkwrap, not the package-lock.json checked below.
+        return {"status": "skipped", "reason": "npm-shrinkwrap.json is not supported"}
     targets, why = install_dirs(tree)
     if targets is None:
         return {"status": "skipped", "reason": why}
@@ -933,24 +936,29 @@ def install_dirs(tree: Path) -> tuple[list[str] | None, str]:
     root = tree.resolve()
     found = {""}
     for key, entry in packages.items():
-        if not isinstance(key, str):
-            return None, "unreadable package-lock.json"
+        if not isinstance(key, str) or (key and not _plain_relative(key)):
+            return None, "package-lock.json has an install path that is not a plain relative path"
+        if key and root not in (tree / key).resolve().parents:
+            return None, f"package-lock.json installs {_clean(key, 120)} outside the checkout"
         if "node_modules/" in key:
             found.add(key[:key.find("node_modules/")])
         elif key:  # a workspace package installs into its own node_modules too
             found.add(key.rstrip("/") + "/")
         resolved = entry.get("resolved") if isinstance(entry, dict) else None
-        local = None
-        if isinstance(resolved, str) and isinstance(entry, dict) and entry.get("link"):
-            local = resolved
-        elif isinstance(resolved, str) and resolved.startswith("file:"):
-            local = resolved[len("file:"):]
-        if local is not None:
-            # npm links or copies a local package and chmods its bins: it must stay inside.
-            target = (tree / local).resolve()
-            if target != root and root not in target.parents:
-                return None, f"package-lock.json links {_clean(key, 120)} outside the checkout"
+        local = isinstance(entry, dict) and (entry.get("link") or (isinstance(resolved, str) and resolved.startswith("file:")))
+        if local:
+            # npm links or copies a local package and chmods its bins. Only a workspace link (its
+            # target is itself a `packages` key, so it was checked above) is allowed.
+            if not (entry.get("link") and isinstance(resolved, str) and _plain_relative(resolved) and resolved in packages):
+                return None, f"package-lock.json has a local package {_clean(key, 120)} that is not a workspace link"
     return sorted(found), ""
+
+
+def _plain_relative(path: str) -> bool:
+    """A POSIX relative path of plain segments: no absolute, `~`, `..`, `.`, empty segment, `\\` or `%`."""
+    if not path or path.startswith(("/", "~")) or any(c in path for c in "\\%:\0"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))
 
 
 def dependency_note(install: dict[str, Any] | None) -> str:
