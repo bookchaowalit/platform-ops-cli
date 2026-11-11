@@ -841,8 +841,8 @@ def install_dependencies(
         if meta.startswith("120000 "):
             # npm runs outside any sandbox and chmods bin targets and links workspaces: a symlink
             # that leaves the checkout (bin file, workspace dir, anything) would carry that outside.
-            target = (tree / path).resolve()
-            if target != root and root not in target.parents:
+            # strict: a loop or dangling link has no target to check, so it is refused too.
+            if not _resolves_inside(root, tree / path, allow_root=True, strict=True):
                 return {"status": "skipped", "reason": f"tracked symlink {_clean(path, 120)} leaves the checkout"}
     if (tree / "npm-shrinkwrap.json").exists() or (tree / "npm-shrinkwrap.json").is_symlink():
         # npm would install from the shrinkwrap, not the package-lock.json checked below.
@@ -851,8 +851,7 @@ def install_dependencies(
     if targets is None:
         return {"status": "skipped", "reason": why}
     for prefix in targets:
-        place = (tree / prefix).resolve() if prefix else root
-        if place != root and root not in place.parents:
+        if prefix and not _resolves_inside(root, tree / prefix, allow_root=True):
             return {"status": "skipped", "reason": f"install dir {prefix or '.'} leaves the checkout"}
         if _git(tree, *git_args, "check-ignore", "-q", f"{prefix}node_modules/").returncode != 0:
             return {"status": "skipped", "reason": f"{prefix}node_modules is not git-ignored"}
@@ -938,7 +937,7 @@ def install_dirs(tree: Path) -> tuple[list[str] | None, str]:
     for key, entry in packages.items():
         if not isinstance(key, str) or (key and not _plain_relative(key)):
             return None, "package-lock.json has an install path that is not a plain relative path"
-        if key and root not in (tree / key).resolve().parents:
+        if key and not _resolves_inside(root, tree / key):
             return None, f"package-lock.json installs {_clean(key, 120)} outside the checkout"
         if "node_modules/" in key:
             found.add(key[:key.find("node_modules/")])
@@ -952,6 +951,16 @@ def install_dirs(tree: Path) -> tuple[list[str] | None, str]:
             if not (entry.get("link") and isinstance(resolved, str) and _plain_relative(resolved) and resolved in packages):
                 return None, f"package-lock.json has a local package {_clean(key, 120)} that is not a workspace link"
     return sorted(found), ""
+
+
+def _resolves_inside(root: Path, path: Path, *, allow_root: bool = False, strict: bool = False) -> bool:
+    """Whether path resolves under root; a symlink loop, an unreadable link or (strict) a missing
+    target counts as outside. Never raises."""
+    try:
+        target = path.resolve(strict=strict)
+    except (OSError, RuntimeError):
+        return False
+    return root in target.parents or (allow_root and target == root)
 
 
 def _plain_relative(path: str) -> bool:
