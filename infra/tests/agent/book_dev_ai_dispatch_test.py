@@ -1115,7 +1115,16 @@ def dependency_tests(tmp: Path) -> None:
         root_only = variant("root-only", {**base_files, ".gitignore": "/node_modules/\n", "packages/a/package.json": "{}"})
         assert root_only["reason"] == "packages/a/node_modules is not git-ignored", root_only
         escaped = variant("escaped", {**base_files, ".gitignore": "node_modules/\n"}, links=(("packages/a", str(outside)),))
-        assert escaped["reason"] == "install dir packages/a/ leaves the checkout", escaped
+        assert escaped["reason"] == "tracked symlink packages/a leaves the checkout", escaped
+        # Codex review 2026-11-11: a workspace bin target linked outside (npm chmods it) blocks the install.
+        (outside / "cli.js").write_text("x")
+        bin_link = variant("bin-link", {**base_files, ".gitignore": "node_modules/\n",
+                                        "packages/a/package.json": '{"bin": {"t": "cli.js"}}'},
+                           links=(("packages/a/cli.js", str(outside / "cli.js")),))
+        assert bin_link["reason"] == "tracked symlink packages/a/cli.js leaves the checkout", bin_link
+        inside = variant("inside-link", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}",
+                                         "packages/a/real.js": "x"}, links=(("packages/a/cli.js", "real.js"),))
+        assert inside["status"] == "installed", "a symlink inside the checkout is fine"
         assert variant("bad-lock", {"package.json": "{}", "package-lock.json": "{", ".gitignore": "node_modules/\n"})[
             "reason"] == "unreadable package-lock.json"
         ok = variant("workspaces", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"})
