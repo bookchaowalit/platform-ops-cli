@@ -849,10 +849,8 @@ def install_dependencies(
     }
     started = time.monotonic()
     try:
-        done = subprocess.run(
-            [npm, *NPM_CI_COMMAND[1:]], cwd=str(tree), env=env, capture_output=True, text=True,
-            check=False, timeout=NPM_CI_TIMEOUT,
-        )
+        # Own session + subreaper: a timeout kills npm and every git or npm process it started.
+        done = _run_process([npm, *NPM_CI_COMMAND[1:]], input=None, cwd=str(tree), env=env, timeout=NPM_CI_TIMEOUT)
     except subprocess.TimeoutExpired:
         return {"status": "failed", "error": f"npm ci timed out after {NPM_CI_TIMEOUT}s"}
     except OSError as exc:
