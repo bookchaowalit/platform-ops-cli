@@ -62,6 +62,29 @@ def sample_ticket(tmp: Path) -> Path:
     return path
 
 
+def long_thai_checklist() -> tuple[str, list[str]]:
+    """A Linear UX-review issue: Thai prose and six checklist items, far past the old 600/1200/3000/6000 caps."""
+    detail = "ตรวจทุกหน้าที่ใช้คอมโพเนนต์นี้ที่ความกว้าง 375/768/1440 และถ่ายภาพหน้าจอก่อนและหลังแก้ " * 12
+    items = [
+        f"- [ ] {n}. {text} {detail.strip()} (ข้อ {n})"
+        for n, text in enumerate(
+            [
+                "ฟอนต์ที่ตั้งใจไว้ไม่ทำงานจริง: globals.css ใช้ var(--font-sans) แต่ layout.tsx ไม่ได้ตั้งตัวแปรนี้",
+                "ปุ่มหลักมีคอนทราสต์ต่ำกว่า 4.5:1 บนพื้นหลังสีอ่อน",
+                "เมนูมือถือเปิดแล้วปิดด้วยปุ่ม Esc ไม่ได้",
+                "ระยะบรรทัดภาษาไทยแน่นเกินไป ควรเป็น line-height 1.7",
+                "รูปภาพไม่มี alt ที่สื่อความหมาย",
+                "หน้า 404 ไม่มีลิงก์กลับหน้าแรก",
+            ],
+            1,
+        )
+    ]
+    description = "\n".join(
+        ["Linear BOO-394: https://linear.app/x/issue/BOO-394", "", "## ปัญหาที่พบในรีวิว UX", "", "## ต้องแก้", *items]
+    )
+    return description, items
+
+
 def git_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     for args in (
@@ -961,6 +984,30 @@ def planner_tests(tmp: Path) -> None:
         assert "STOP-MARKER" in builds[0] and "\n## Verification" in builds[0], builds[0][-1500:]
 
 
+def description_tests(tmp: Path) -> None:
+    """Every checklist line of a long Thai issue reaches the builder, planner, reviewer and escalation prompts."""
+    import book_dev_ai_dispatch as d
+
+    description, items = long_thai_checklist()
+    assert len(description) > 6000, len(description)
+    ticket = json.loads(sample_ticket(tmp).read_text())
+    ticket["selected"]["task"]["description"] = description
+    prompts = {
+        "builder": build_prompt(ticket, mode="implement", branch="ai/x", worktree=tmp),
+        "planner": d.build_split_prompt(ticket, base="abc", parallel=2),
+        "reviewer": d.build_review_prompt(ticket, base="abc", head="def", branch="ai/x"),
+        "escalation": d.build_escalation_prompt(ticket, base="abc", head="def", branch="ai/x", reviews=["r"]),
+    }
+    for name, prompt in prompts.items():
+        for item in items:
+            assert item in prompt.splitlines(), (name, item[:40])
+        assert d.TRUNCATED_MARK not in prompt, name
+
+    ticket["selected"]["task"]["description"] = "- [ ] " + "ก" * (d.DESCRIPTION_LIMIT + 500)
+    review = d.build_review_prompt(ticket, base="abc", head="def", branch="ai/x")
+    assert f"\n{d.TRUNCATED_MARK}\n" in review and "ก" * (d.DESCRIPTION_LIMIT + 1) not in review, review[-200:]
+
+
 def main() -> int:
     assert parse_providers("grok,codex") == ["grok", "codex"]
     assert parse_providers("codex,codex,grok") == ["codex", "grok"]
@@ -1110,6 +1157,8 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as temp_dir:
         build_review_tests(Path(temp_dir))
+    with tempfile.TemporaryDirectory() as temp_dir:
+        description_tests(Path(temp_dir))
     with tempfile.TemporaryDirectory() as temp_dir:
         planner_tests(Path(temp_dir))
 
