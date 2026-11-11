@@ -1138,7 +1138,8 @@ def dependency_tests(tmp: Path) -> None:
         tree = tmp / "bin-chmod"
         assert not subprocess.run(["git", "-C", str(tree), "status", "--porcelain"], capture_output=True, text=True).stdout
         assert (tree / "node_modules" / "react").is_dir(), "the ignored install survives the restore"
-        assert "`node <file>`" in d.dependency_note(touched) and "`packages/a/cli.js`" in d.dependency_note(touched)
+        assert "`node <its file>`" in d.dependency_note(touched)
+        assert "cli.js" not in d.dependency_note(touched), "branch-chosen file names never reach the prompt"
         # Codex review 2026-11-11: files npm changed before a failure or timeout are restored too.
         for name, tail in (("bin-fail", "exit 1\n"), ("bin-hang", "sleep 300\n")):
             fake_npm.write_text("#!/bin/sh\nchmod +x packages/a/cli.js; echo stray > stray.txt\n" + tail)

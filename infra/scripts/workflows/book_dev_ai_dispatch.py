@@ -941,9 +941,9 @@ def dependency_note(install: dict[str, Any] | None) -> str:
                 "test and build commands; do not install anything (the network is off).\n")
         if install.get("restored"):
             # npm's chmod or shebang fix of a tracked bin file was reset to keep the commit exact.
-            note += ("These files npm changed were put back to the committed version, so a workspace bin\n"
-                     "among them may not run from node_modules/.bin; run it as `node <file>`: "
-                     + ", ".join(f"`{path}`" for path in install["restored"]) + "\n")
+            # File names come from the branch, so they stay in the flow record, out of the prompt.
+            note += ("Files npm changed (a bin's mode or shebang) were put back to the committed version, so\n"
+                     "a workspace bin may not run from node_modules/.bin; run it as `node <its file>`.\n")
         return note
     why = install.get("reason") or install.get("error") or install["status"]
     return (f"\nDependencies are not installed ({_clean(why, 200)}) and the network is off: name each\n"
