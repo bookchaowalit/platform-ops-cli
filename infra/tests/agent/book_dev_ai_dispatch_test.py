@@ -1174,6 +1174,9 @@ def dependency_tests(tmp: Path) -> None:
         ):
             odd = variant(name, {**ignore, "package-lock.json": json.dumps({"lockfileVersion": 3, "packages": packages})})
             assert reason in odd.get("reason", ""), (name, odd)
+        # Codex review 2026-11-11: a symlink loop skips the install, it never raises out of the flow.
+        looped = variant("loop", {**ignore, "package-lock.json": lock}, links=(("a", "b"), ("b", "a")))
+        assert looped["reason"] == "tracked symlink a leaves the checkout", looped
         shrink = variant("shrinkwrap", {**ignore, "package-lock.json": lock, "npm-shrinkwrap.json": "{}"})
         assert shrink["reason"] == "npm-shrinkwrap.json is not supported", shrink
         inside_link = variant("lock-link-inside", {**ignore, "tools/t/package.json": "{}", "package-lock.json": json.dumps(
