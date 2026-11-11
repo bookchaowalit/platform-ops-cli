@@ -1019,7 +1019,7 @@ def dependency_tests(tmp: Path) -> None:
     fake_npm = bin_dir / "npm"
     fake_npm_text = (
         "#!/bin/sh\n"
-        f'echo "$PWD|$*|${{GH_TOKEN:-none}}" >> "{npm_log}"\n'
+        f'echo "$PWD|$*|${{GH_TOKEN:-none}}|$(cat "$NPM_CONFIG_USERCONFIG" "$NPM_CONFIG_GLOBALCONFIG" | wc -c)" >> "{npm_log}"\n'
         'if [ -n "$FAKE_NPM_FAIL" ]; then echo "registry down" >&2; exit 1; fi\n'
         "mkdir -p node_modules/react && echo ok > node_modules/react/index.js\n"
     )
@@ -1052,7 +1052,7 @@ def dependency_tests(tmp: Path) -> None:
         assert done["status"] == "installed", done
         line = npm_log.read_text().splitlines()[-1]
         assert line.split("|")[1] == "ci --ignore-scripts --no-audit --no-fund --prefer-offline", line
-        assert line.endswith("|none"), "credentials are scrubbed from the npm environment"
+        assert line.split("|")[2:] == ["none", "0"], "no credentials, and the user and global npmrc are empty"
         assert "npm ci --ignore-scripts" in d.dependency_note(done)
         assert not subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True).stdout
         assert d.install_dependencies(app)["reason"] == "node_modules is committed in the branch"
@@ -1138,6 +1138,7 @@ def dependency_tests(tmp: Path) -> None:
         tree = tmp / "bin-chmod"
         assert not subprocess.run(["git", "-C", str(tree), "status", "--porcelain"], capture_output=True, text=True).stdout
         assert (tree / "node_modules" / "react").is_dir(), "the ignored install survives the restore"
+        assert "`node <file>`" in d.dependency_note(touched) and "`packages/a/cli.js`" in d.dependency_note(touched)
         # Codex review 2026-11-11: files npm changed before a failure or timeout are restored too.
         for name, tail in (("bin-fail", "exit 1\n"), ("bin-hang", "sleep 300\n")):
             fake_npm.write_text("#!/bin/sh\nchmod +x packages/a/cli.js; echo stray > stray.txt\n" + tail)
