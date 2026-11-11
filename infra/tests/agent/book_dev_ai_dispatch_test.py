@@ -1013,6 +1013,8 @@ def dependency_tests(tmp: Path) -> None:
     """The dispatcher runs `npm ci --ignore-scripts` before the builder and in each review checkout."""
     import book_dev_ai_dispatch as d
 
+    lock = json.dumps({"lockfileVersion": 3, "packages": {"": {}}})
+
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     npm_log = tmp / "npm.log"
@@ -1035,7 +1037,7 @@ def dependency_tests(tmp: Path) -> None:
         assert d.install_dependencies(app) == {"status": "skipped", "reason": "no package-lock.json"}
         assert d.dependency_note(d.install_dependencies(app)) == ""
         (app / "package.json").write_text("{}")
-        (app / "package-lock.json").write_text("{}")
+        (app / "package-lock.json").write_text(lock)
         assert d.install_dependencies(app)["reason"] == "node_modules is not git-ignored", "an install would dirty the tree"
         (app / ".gitignore").write_text("node_modules/\n")
         subprocess.run(["git", "-C", str(app), "add", "-A"], check=True)
@@ -1107,7 +1109,8 @@ def dependency_tests(tmp: Path) -> None:
         outside = tmp / "outside"
         outside.mkdir()
         (outside / "keep.txt").write_text("keep")
-        workspace_lock = json.dumps({"packages": {"": {}, "packages/a": {}, "packages/a/node_modules/x": {}}})
+        workspace_lock = json.dumps({"lockfileVersion": 3,
+                                     "packages": {"": {}, "packages/a": {}, "packages/a/node_modules/x": {}}})
         base_files = {"package.json": "{}", "package-lock.json": workspace_lock}
         linked = variant("linked", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"},
                          links=(("packages/a/node_modules", str(outside)),))
@@ -1150,6 +1153,39 @@ def dependency_tests(tmp: Path) -> None:
             assert not subprocess.run(["git", "-C", str(tmp / name), "status", "--porcelain"],
                                       capture_output=True, text=True).stdout, name
         fake_npm.write_text(fake_npm_text)
+        # Codex review 2026-11-11: a v1 lockfile, or a link / file: entry that leaves the checkout, is refused.
+        ignore = {"package.json": "{}", ".gitignore": "node_modules/\n"}
+        v1 = variant("lock-v1", {**ignore, "package-lock.json": json.dumps({"lockfileVersion": 1, "dependencies": {
+            "tool": {"version": "file:../outside"}}})})
+        assert v1["reason"].startswith("package-lock.json v1 cannot be checked"), v1
+        for name, entry in (("lock-link", {"resolved": "../outside", "link": True}),
+                            ("lock-file", {"resolved": f"file:{outside}"})):
+            out = variant(name, {**ignore, "package-lock.json": json.dumps(
+                {"lockfileVersion": 3, "packages": {"": {}, "node_modules/tool": entry}})})
+            assert out["reason"] == "package-lock.json has a local package node_modules/tool that is not a workspace link", out
+        # Security review 2026-11-11: odd paths, non-workspace local packages and a shrinkwrap are refused.
+        for name, packages, reason in (
+            ("key-dotdot", {"": {}, "../x/node_modules/y": {}}, "not a plain relative path"),
+            ("key-abs", {"": {}, "/tmp/node_modules/y": {}}, "not a plain relative path"),
+            ("key-backslash", {"": {}, "a\\..\\..\\x": {}}, "not a plain relative path"),
+            ("link-tilde", {"": {}, "node_modules/t": {"resolved": "~/x", "link": True}}, "not a workspace link"),
+            ("link-unlisted", {"": {}, "node_modules/t": {"resolved": "tools/t", "link": True}}, "not a workspace link"),
+            ("file-inside", {"": {}, "node_modules/t": {"resolved": "file:tools/t"}}, "not a workspace link"),
+        ):
+            odd = variant(name, {**ignore, "package-lock.json": json.dumps({"lockfileVersion": 3, "packages": packages})})
+            assert reason in odd.get("reason", ""), (name, odd)
+        shrink = variant("shrinkwrap", {**ignore, "package-lock.json": lock, "npm-shrinkwrap.json": "{}"})
+        assert shrink["reason"] == "npm-shrinkwrap.json is not supported", shrink
+        inside_link = variant("lock-link-inside", {**ignore, "tools/t/package.json": "{}", "package-lock.json": json.dumps(
+            {"lockfileVersion": 3, "packages": {"": {}, "tools/t": {}, "node_modules/t": {"resolved": "tools/t", "link": True}}})})
+        assert inside_link["status"] == "installed", inside_link
+        # Codex review 2026-11-11: an uncontained npm or an unrestorable tree is "unsafe" and stops the flow.
+        with mock.patch("book_dev_ai_dispatch._run_process", side_effect=d.ContainmentError("1 survived")):
+            uncontained = variant("uncontained", {**ignore, "package-lock.json": lock})
+        assert uncontained["status"] == "unsafe" and "could not be contained" in uncontained["error"], uncontained
+        with mock.patch("book_dev_ai_dispatch._restore_after_install", return_value=None):
+            unrestored = variant("unrestored", {**ignore, "package-lock.json": lock})
+        assert unrestored["status"] == "unsafe", unrestored
         assert variant("bad-lock", {"package.json": "{}", "package-lock.json": "{", ".gitignore": "node_modules/\n"})[
             "reason"] == "unreadable package-lock.json"
         ok = variant("workspaces", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"})
@@ -1164,7 +1200,7 @@ def dependency_tests(tmp: Path) -> None:
         repo = tmp / "flow" / "repo"
         (repo / ".git").rmdir()
         git_repo(repo)
-        for name, text in (("package.json", "{}"), ("package-lock.json", "{}"), (".gitignore", "node_modules/\n")):
+        for name, text in (("package.json", "{}"), ("package-lock.json", lock), (".gitignore", "node_modules/\n")):
             (repo / name).write_text(text)
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "deps"], check=True)
@@ -1201,6 +1237,26 @@ def dependency_tests(tmp: Path) -> None:
                 assert not seen[1] and deps["review-0"]["reason"] == "the branch changes dependency manifests", deps
                 assert "not installed" in calls[1]["prompt"]
             assert not calls[0]["cwd"].exists(), "worktree with ignored node_modules is still removed after the PR"
+        # An unsafe install stops the flow before any agent runs; the worktree is kept for the owner.
+        for target in ("build", "review"):
+            run, calls = fake_provider(["PASS"])
+            real_install = d.install_dependencies
+
+            def unsafe(tree, **kwargs):
+                if target == "build" or kwargs.get("unchanged_since") and "book-dev-review-" in str(tree):
+                    return {"status": "unsafe", "error": "npm changed files that could not be restored"}
+                return real_install(tree, **kwargs)
+
+            with mock.patch("book_dev_ai_dispatch._now_stamp", return_value=f"20261111T0001{len(target):02d}Z"), \
+                    mock.patch("book_dev_ai_dispatch.resolve_claude_cmd", return_value=["claude"]), \
+                    mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]), \
+                    mock.patch("book_dev_ai_dispatch.install_dependencies", side_effect=unsafe), \
+                    mock.patch("book_dev_ai_dispatch.run_provider", side_effect=run), \
+                    mock.patch("book_dev_ai_dispatch.open_pull_request") as pr:
+                report = dispatch(**common)
+            assert report["status"] == "failed" and "could not be restored" in report["flow"]["error"], (target, report)
+            assert report["flow"]["worktree_kept"] and not pr.called, target
+            assert [c["label"] for c in calls] == ([] if target == "build" else ["claude-build"]), (target, calls)
     finally:
         for name, value in saved.items():
             if value is None:
