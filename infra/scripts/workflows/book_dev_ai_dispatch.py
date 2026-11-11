@@ -860,17 +860,24 @@ def install_dependencies(
         name: value for name, value in os.environ.items()
         if not (CREDENTIAL_ENV_RE.search(name.upper()) or URL_CREDENTIAL_RE.search(value))
     }
+    # The owner's ~/.npmrc and the global npmrc may hold registry tokens: npm reads neither, only
+    # the project's .npmrc (identical to the base, checked above).
+    # npm refuses one file for both, so each gets its own empty file.
     started = time.monotonic()
     failure: str | None = None
-    try:
-        # Own session + subreaper: a timeout kills npm and every git or npm process it started.
-        done = _run_process([npm, *NPM_CI_COMMAND[1:]], input=None, cwd=str(tree), env=env, timeout=NPM_CI_TIMEOUT)
-        if done.returncode != 0:
-            failure = _clean(done.stderr or done.stdout, 400) or f"npm ci exited {done.returncode}"
-    except subprocess.TimeoutExpired:
-        failure = f"npm ci timed out after {NPM_CI_TIMEOUT}s"
-    except OSError as exc:
-        failure = _clean(str(exc), 300)
+    with tempfile.TemporaryDirectory(prefix="book-dev-npmrc-") as empty:
+        for name in ("user", "global"):
+            (Path(empty) / name).write_text("")
+        env.update(NPM_CONFIG_USERCONFIG=str(Path(empty) / "user"), NPM_CONFIG_GLOBALCONFIG=str(Path(empty) / "global"))
+        try:
+            # Own session + subreaper: a timeout kills npm and every git or npm process it started.
+            done = _run_process([npm, *NPM_CI_COMMAND[1:]], input=None, cwd=str(tree), env=env, timeout=NPM_CI_TIMEOUT)
+            if done.returncode != 0:
+                failure = _clean(done.stderr or done.stdout, 400) or f"npm ci exited {done.returncode}"
+        except subprocess.TimeoutExpired:
+            failure = f"npm ci timed out after {NPM_CI_TIMEOUT}s"
+        except OSError as exc:
+            failure = _clean(str(exc), 300)
     seconds = round(time.monotonic() - started, 1)
     # Whatever npm did before it finished, failed or was killed: put the tree back first.
     restored = _restore_after_install(tree, git_args)
@@ -930,8 +937,14 @@ def dependency_note(install: dict[str, Any] | None) -> str:
     if not install or install.get("reason") == "no package-lock.json":
         return ""
     if install["status"] == "installed":
-        return ("\nDependencies: the dispatcher ran `npm ci --ignore-scripts` in this checkout, so run the\n"
+        note = ("\nDependencies: the dispatcher ran `npm ci --ignore-scripts` in this checkout, so run the\n"
                 "test and build commands; do not install anything (the network is off).\n")
+        if install.get("restored"):
+            # npm's chmod or shebang fix of a tracked bin file was reset to keep the commit exact.
+            # File names come from the branch, so they stay in the flow record, out of the prompt.
+            note += ("Files npm changed (a bin's mode or shebang) were put back to the committed version, so\n"
+                     "a workspace bin may not run from node_modules/.bin; run it as `node <its file>`.\n")
+        return note
     why = install.get("reason") or install.get("error") or install["status"]
     return (f"\nDependencies are not installed ({_clean(why, 200)}) and the network is off: name each\n"
             "check you could not run instead of guessing its result.\n")
