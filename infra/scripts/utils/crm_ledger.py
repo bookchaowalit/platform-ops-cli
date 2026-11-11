@@ -28,13 +28,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from task_store import ClientConfigError, _NoRedirect, client_config_path, read_client_file, validate_api_url
+from task_store import ClientConfigError, _NoRedirect, automation_token, client_config_path, read_client_file, validate_api_url
 
 URL_KEY = "EMPIRE_CRM_LEDGER_API"
 TOKEN_KEY = "EMPIRE_CRM_LEDGER_TOKEN"
 TOKEN_FILE = Path.home() / ".config" / "solo-crm" / "income.token"
 MAX_LIMIT = 500
-TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9._~+/=-]{16,512}$")  # the ledger API's page cap; totals always cover every matching row
+# Behind the edge gateway only RS256 platform tokens pass, so the static CRM token cannot be used
+# there; the owner-cli automation token (audience crm-income-api, allowed by crm-api) is used instead.
+GATEWAY_HOST = "gateway.bookchaowalit.com"
+TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9._~+/=-]{16,8192}$")  # the ledger API's page cap; totals always cover every matching row
 
 
 class LedgerError(RuntimeError):
@@ -137,9 +140,14 @@ def ledger_url(environ: Any = None) -> str:
     return validate_api_url(value)
 
 
-def ledger_token(environ: Any = None) -> str:
+def ledger_token(environ: Any = None, url: str | None = None) -> str:
     environ = os.environ if environ is None else environ
-    if environ.get(TOKEN_KEY):
+    if url and urllib.parse.urlsplit(url).hostname == GATEWAY_HOST:
+        try:
+            token = automation_token("owner-cli")
+        except RuntimeError as exc:
+            raise ClientConfigError(f"the CRM ledger goes through the gateway: {exc}") from None
+    elif environ.get(TOKEN_KEY):
         token = environ[TOKEN_KEY].strip()
     elif TOKEN_FILE.is_file():
         if TOKEN_FILE.stat().st_mode & 0o077:
@@ -153,7 +161,8 @@ def ledger_token(environ: Any = None) -> str:
 
 
 def open_crm_ledger() -> CrmLedger:
-    return CrmLedger(ledger_url(), ledger_token())
+    url = ledger_url()
+    return CrmLedger(url, ledger_token(url=url))
 
 
 def total_thb(totals: dict[str, float]) -> float:
