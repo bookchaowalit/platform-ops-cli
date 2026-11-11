@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1053,7 +1054,8 @@ def dependency_tests(tmp: Path) -> None:
         assert line.endswith("|none"), "credentials are scrubbed from the npm environment"
         assert "npm ci --ignore-scripts" in d.dependency_note(done)
         assert not subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True).stdout
-        assert d.install_dependencies(app)["reason"] == "node_modules already present"
+        assert d.install_dependencies(app)["reason"] == "node_modules is committed in the branch"
+        assert "not installed" in d.dependency_note(d.install_dependencies(app)), "never claims an install it did not run"
         with mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=[
             subprocess.CompletedProcess([], 0, "", ""), subprocess.TimeoutExpired("npm", 1)
         ]):
@@ -1061,6 +1063,20 @@ def dependency_tests(tmp: Path) -> None:
             (app / "node_modules" / "react").rmdir()
             (app / "node_modules").rmdir()
             assert "timed out" in d.install_dependencies(app)["error"]
+
+        # A changed manifest anywhere in the tree (workspace package.json, shrinkwrap, nested .npmrc) blocks the install.
+        base_sha = subprocess.run(["git", "-C", str(app), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        for changed in ("npm-shrinkwrap.json", "packages/a/package.json", "packages/a/.npmrc", "package-lock.json"):
+            subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
+            shutil.rmtree(app / "node_modules", ignore_errors=True)
+            (app / changed).parent.mkdir(parents=True, exist_ok=True)
+            (app / changed).write_text('{"x": 1}')
+            subprocess.run(["git", "-C", str(app), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(app), "commit", "-q", "-m", changed], check=True)
+            gated = d.install_dependencies(app, unchanged_since=base_sha)
+            assert gated["reason"] == "the branch changes dependency manifests", (changed, gated)
+        subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
+        assert d.install_dependencies(app, unchanged_since=base_sha)["status"] == "installed"
 
         # The flow: deps in the builder's worktree and in every review checkout of an unchanged lockfile.
         ticket_path = sample_ticket(tmp / "flow")

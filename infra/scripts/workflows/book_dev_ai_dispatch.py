@@ -787,9 +787,11 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 NPM_CI_ENV = "BOOK_DEV_NPM_CI"  # "0" turns the install off
 NPM_CI_TIMEOUT = 900
 NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline")
-# A branch that changes one of these is reviewed without an install: its lockfile or
-# registry config is the builder's, not the owner's.
-DEPENDENCY_MANIFESTS = ("package.json", "package-lock.json", ".npmrc")
+# A tree that changes one of these, at any depth, is left without an install: its lockfile,
+# workspace manifest or registry config is the builder's, not the owner's.
+DEPENDENCY_MANIFESTS = tuple(
+    f":(glob)**/{name}" for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
+)
 
 
 def install_dependencies(
@@ -805,8 +807,9 @@ def install_dependencies(
         return {"status": "skipped", "reason": f"{NPM_CI_ENV}=0"}
     if not (tree / "package-lock.json").is_file():
         return {"status": "skipped", "reason": "no package-lock.json"}
-    if (tree / "node_modules").exists():
-        return {"status": "skipped", "reason": "node_modules already present"}
+    if (tree / "node_modules").exists() or (tree / "node_modules").is_symlink():
+        # Only Git could have put it there: it is the branch's, never trusted as an install.
+        return {"status": "skipped", "reason": "node_modules is committed in the branch"}
     if _git(tree, *git_args, "check-ignore", "-q", "node_modules/").returncode != 0:
         return {"status": "skipped", "reason": "node_modules is not git-ignored"}
     if unchanged_since:
@@ -843,7 +846,7 @@ def dependency_note(install: dict[str, Any] | None) -> str:
     """One prompt line that tells the agent whether the checkout's dependencies are there."""
     if not install or install.get("reason") == "no package-lock.json":
         return ""
-    if install["status"] == "installed" or install.get("reason") == "node_modules already present":
+    if install["status"] == "installed":
         return ("\nDependencies: the dispatcher ran `npm ci --ignore-scripts` in this checkout, so run the\n"
                 "test and build commands; do not install anything (the network is off).\n")
     why = install.get("reason") or install.get("error") or install["status"]
@@ -1541,8 +1544,8 @@ def build_review(
     if not gitdir.is_dir():
         return "failed", results, {**flow, "error": "could not resolve the worktree gitdir"}
     pinned = (f"--git-dir={gitdir}", f"--work-tree={worktree}")
-    # The tree is still the base (or the combined subtasks' reviewed head) here.
-    flow["dependencies"] = {"build": install_dependencies(worktree, git_args=safe)}
+    # The tree is the base here, or the combined subtasks' head, whose manifests must match the base.
+    flow["dependencies"] = {"build": install_dependencies(worktree, unchanged_since=base, git_args=safe)}
     deps_note = dependency_note(flow["dependencies"]["build"])
 
     def wt(*args: str) -> subprocess.CompletedProcess[str]:
