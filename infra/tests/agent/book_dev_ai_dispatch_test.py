@@ -1057,7 +1057,8 @@ def dependency_tests(tmp: Path) -> None:
         assert d.install_dependencies(app)["reason"] == "node_modules is committed in the branch"
         assert "not installed" in d.dependency_note(d.install_dependencies(app)), "never claims an install it did not run"
         with mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=[
-            subprocess.CompletedProcess([], 0, "", ""), subprocess.TimeoutExpired("npm", 1)
+            subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.TimeoutExpired("npm", 1),
         ]):
             (app / "node_modules" / "react" / "index.js").unlink()
             (app / "node_modules" / "react").rmdir()
@@ -1077,6 +1078,41 @@ def dependency_tests(tmp: Path) -> None:
             assert gated["reason"] == "the branch changes dependency manifests", (changed, gated)
         subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
         assert d.install_dependencies(app, unchanged_since=base_sha)["status"] == "installed"
+
+        # Codex review 2026-11-11: workspace install dirs are checked, not only the root.
+        def variant(name, files, links=()):
+            tree = tmp / name
+            git_repo(tree)
+            for path, text in files.items():
+                (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                (tree / path).write_text(text)
+            for path, target in links:
+                (tree / path).parent.mkdir(parents=True, exist_ok=True)
+                (tree / path).symlink_to(target)
+            subprocess.run(["git", "-C", str(tree), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(tree), "commit", "-q", "-m", name], check=True)
+            return d.install_dependencies(tree)
+
+        outside = tmp / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        workspace_lock = json.dumps({"packages": {"": {}, "packages/a": {}, "packages/a/node_modules/x": {}}})
+        base_files = {"package.json": "{}", "package-lock.json": workspace_lock}
+        linked = variant("linked", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"},
+                         links=(("packages/a/node_modules", str(outside)),))
+        assert linked["reason"] == "node_modules is committed in the branch", linked
+        root_only = variant("root-only", {**base_files, ".gitignore": "/node_modules/\n", "packages/a/package.json": "{}"})
+        assert root_only["reason"] == "packages/a/node_modules is not git-ignored", root_only
+        escaped = variant("escaped", {**base_files, ".gitignore": "node_modules/\n"}, links=(("packages/a", str(outside)),))
+        assert escaped["reason"] == "install dir packages/a/ leaves the checkout", escaped
+        assert variant("bad-lock", {"package.json": "{}", "package-lock.json": "{", ".gitignore": "node_modules/\n"})[
+            "reason"] == "unreadable package-lock.json"
+        ok = variant("workspaces", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"})
+        assert ok["status"] == "installed", ok
+        assert (outside / "keep.txt").read_text() == "keep" and not (outside / "react").exists()
+        # Each install's timeout is inside the child and service budgets.
+        assert d.child_timeout_sec(30) >= 30 * d.FLOW_RUNS + d.NPM_CI_TIMEOUT * d.INSTALL_RUNS
+        assert d.worst_case_seconds(30) >= d.child_timeout_sec(30) + 2 * 30 + d.NPM_CI_TIMEOUT * d.INSTALL_RUNS
 
         # The flow: deps in the builder's worktree and in every review checkout of an unchanged lockfile.
         ticket_path = sample_ticket(tmp / "flow")
