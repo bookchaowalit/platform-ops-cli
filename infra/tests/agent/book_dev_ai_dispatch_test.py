@@ -1017,12 +1017,13 @@ def dependency_tests(tmp: Path) -> None:
     bin_dir.mkdir()
     npm_log = tmp / "npm.log"
     fake_npm = bin_dir / "npm"
-    fake_npm.write_text(
+    fake_npm_text = (
         "#!/bin/sh\n"
         f'echo "$PWD|$*|${{GH_TOKEN:-none}}" >> "{npm_log}"\n'
         'if [ -n "$FAKE_NPM_FAIL" ]; then echo "registry down" >&2; exit 1; fi\n'
         "mkdir -p node_modules/react && echo ok > node_modules/react/index.js\n"
     )
+    fake_npm.write_text(fake_npm_text)
     fake_npm.chmod(0o755)
     saved = {name: os.environ.get(name) for name in ("PATH", "GH_TOKEN", d.NPM_CI_ENV, "FAKE_NPM_FAIL")}
     os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
@@ -1056,10 +1057,7 @@ def dependency_tests(tmp: Path) -> None:
         assert not subprocess.run(["git", "-C", str(app), "status", "--porcelain"], capture_output=True, text=True).stdout
         assert d.install_dependencies(app)["reason"] == "node_modules is committed in the branch"
         assert "not installed" in d.dependency_note(d.install_dependencies(app)), "never claims an install it did not run"
-        with mock.patch("book_dev_ai_dispatch.subprocess.run", side_effect=[
-            subprocess.CompletedProcess([], 0, "", ""), subprocess.CompletedProcess([], 0, "", ""),
-            subprocess.TimeoutExpired("npm", 1),
-        ]):
+        with mock.patch("book_dev_ai_dispatch._run_process", side_effect=subprocess.TimeoutExpired("npm", 1)):
             (app / "node_modules" / "react" / "index.js").unlink()
             (app / "node_modules" / "react").rmdir()
             (app / "node_modules").rmdir()
@@ -1078,6 +1076,19 @@ def dependency_tests(tmp: Path) -> None:
             assert gated["reason"] == "the branch changes dependency manifests", (changed, gated)
         subprocess.run(["git", "-C", str(app), "checkout", "-q", "--detach", base_sha], check=True)
         assert d.install_dependencies(app, unchanged_since=base_sha)["status"] == "installed"
+
+        # Codex review 2026-11-11: a timed-out install leaves no npm child (git, nested npm) running.
+        shutil.rmtree(app / "node_modules", ignore_errors=True)
+        orphan = tmp / "orphan.pid"
+        hang = bin_dir / "npm"
+        hang.write_text(f"#!/bin/sh\nsleep 300 &\necho $! > \"{orphan}\"\nsleep 300\n")
+        with mock.patch.object(d, "NPM_CI_TIMEOUT", 1):
+            hung = d.install_dependencies(app)
+        assert hung["status"] == "failed" and "timed out" in hung["error"], hung
+        child = int(orphan.read_text())
+        state = Path(f"/proc/{child}/stat")
+        assert not state.exists() or state.read_text().split(") ")[1][0] == "Z", "npm's child still runs"
+        fake_npm.write_text(fake_npm_text)
 
         # Codex review 2026-11-11: workspace install dirs are checked, not only the root.
         def variant(name, files, links=()):
