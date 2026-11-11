@@ -1125,6 +1125,19 @@ def dependency_tests(tmp: Path) -> None:
         inside = variant("inside-link", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}",
                                          "packages/a/real.js": "x"}, links=(("packages/a/cli.js", "real.js"),))
         assert inside["status"] == "installed", "a symlink inside the checkout is fine"
+        # Codex review 2026-11-11: a manifest that is a symlink (its target escapes the diff gate) is refused.
+        linked_lock = variant("linked-lock", {"package.json": "{}", "config/lock.json": "{}", ".gitignore": "node_modules/\n"},
+                              links=(("package-lock.json", "config/lock.json"),))
+        assert linked_lock["reason"] == "dependency manifest package-lock.json is a symlink", linked_lock
+        # Codex review 2026-11-11: files npm changes (bin chmod, shebang rewrite) are restored before an agent starts.
+        fake_npm.write_text(fake_npm_text + 'chmod +x packages/a/cli.js; echo stray > stray.txt\n')
+        touched = variant("bin-chmod", {**base_files, ".gitignore": "node_modules/\n",
+                                        "packages/a/package.json": '{"bin": "cli.js"}', "packages/a/cli.js": "x"})
+        fake_npm.write_text(fake_npm_text)
+        assert touched["status"] == "installed" and touched["restored"] == ["packages/a/cli.js", "stray.txt"], touched
+        tree = tmp / "bin-chmod"
+        assert not subprocess.run(["git", "-C", str(tree), "status", "--porcelain"], capture_output=True, text=True).stdout
+        assert (tree / "node_modules" / "react").is_dir(), "the ignored install survives the restore"
         assert variant("bad-lock", {"package.json": "{}", "package-lock.json": "{", ".gitignore": "node_modules/\n"})[
             "reason"] == "unreadable package-lock.json"
         ok = variant("workspaces", {**base_files, ".gitignore": "node_modules/\n", "packages/a/package.json": "{}"})

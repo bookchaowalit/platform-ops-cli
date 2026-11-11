@@ -793,9 +793,8 @@ NPM_CI_ENV = "BOOK_DEV_NPM_CI"  # "0" turns the install off
 NPM_CI_COMMAND = ("npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline")
 # A tree that changes one of these, at any depth, is left without an install: its lockfile,
 # workspace manifest or registry config is the builder's, not the owner's.
-DEPENDENCY_MANIFESTS = tuple(
-    f":(glob,icase)**/{name}" for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
-)
+MANIFEST_NAMES = ("package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc")
+DEPENDENCY_MANIFESTS = tuple(f":(glob,icase)**/{name}" for name in MANIFEST_NAMES)
 
 
 def install_dependencies(
@@ -836,6 +835,9 @@ def install_dependencies(
         if "node_modules" in path.lower().split("/"):
             # npm would read, replace or delete through a committed (or symlinked) workspace node_modules.
             return {"status": "skipped", "reason": "node_modules is committed in the branch"}
+        if meta.startswith("120000 ") and path.rsplit("/", 1)[-1].lower() in MANIFEST_NAMES:
+            # The manifest gate diffs the link, not its target: a builder could edit the target.
+            return {"status": "skipped", "reason": f"dependency manifest {_clean(path, 120)} is a symlink"}
         if meta.startswith("120000 "):
             # npm runs outside any sandbox and chmods bin targets and links workspaces: a symlink
             # that leaves the checkout (bin file, workspace dir, anything) would carry that outside.
@@ -867,9 +869,22 @@ def install_dependencies(
     except OSError as exc:
         return {"status": "failed", "error": _clean(str(exc), 300)}
     seconds = round(time.monotonic() - started, 1)
+    # npm's bin linking chmods bin files and rewrites CRLF shebangs even with --ignore-scripts:
+    # put tracked files back so the agent starts on the exact commit and none of it gets committed.
+    changed = _git(tree, *git_args, "status", "--porcelain", "-z", "--untracked-files=all")
+    restored = sorted({entry[3:] for entry in changed.stdout.split("\0") if len(entry) > 3})
+    if changed.returncode != 0 or restored:
+        reset = _git(tree, *git_args, "reset", "-q", "--hard", "HEAD")
+        clean = _git(tree, *git_args, "clean", "-fdq")  # untracked only; ignored node_modules stays
+        after = _git(tree, *git_args, "status", "--porcelain", "--untracked-files=all")
+        if changed.returncode or reset.returncode or clean.returncode or after.returncode or after.stdout.strip():
+            return {"status": "failed", "seconds": seconds, "error": "npm changed files that could not be restored"}
     if done.returncode != 0:
         return {"status": "failed", "seconds": seconds, "error": _clean(done.stderr or done.stdout, 400)}
-    return {"status": "installed", "seconds": seconds}
+    result: dict[str, Any] = {"status": "installed", "seconds": seconds}
+    if restored:
+        result["restored"] = [_clean(path, 200) for path in restored[:20]]
+    return result
 
 
 def install_dirs(tree: Path) -> list[str] | None:
