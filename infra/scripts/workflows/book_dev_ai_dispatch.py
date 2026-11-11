@@ -805,7 +805,8 @@ def install_dependencies(
 
     No package or project script runs, and the environment loses its credentials. It only runs
     when package-lock.json exists, no node_modules is tracked anywhere, every directory the
-    lockfile installs into stays inside the checkout and has its node_modules git-ignored, so the
+    lockfile installs into stays inside the checkout and has its node_modules git-ignored, and no
+    tracked symlink points outside the checkout, so the
     install never shows up as an edit or writes outside the tree. git_args carries the caller's
     hook and filter overrides. With unchanged_since (the base), a checkout whose dependency
     manifests differ from the base is left without an install. A failed install never stops the
@@ -824,16 +825,26 @@ def install_dependencies(
         )
         if moved.returncode != 0:
             return {"status": "skipped", "reason": "the branch changes dependency manifests"}
-    listed = _git(tree, *git_args, "ls-files", "-z")
+    listed = _git(tree, *git_args, "ls-files", "-s", "-z")
     if listed.returncode != 0:
         return {"status": "skipped", "reason": "could not list tracked files"}
-    if any("node_modules" in part.lower().split("/") for part in listed.stdout.split("\0") if part):
-        # npm would read, replace or delete through a committed (or symlinked) workspace node_modules.
-        return {"status": "skipped", "reason": "node_modules is committed in the branch"}
+    root = tree.resolve()
+    for entry in listed.stdout.split("\0"):
+        if not entry or "\t" not in entry:
+            continue
+        meta, path = entry.split("\t", 1)
+        if "node_modules" in path.lower().split("/"):
+            # npm would read, replace or delete through a committed (or symlinked) workspace node_modules.
+            return {"status": "skipped", "reason": "node_modules is committed in the branch"}
+        if meta.startswith("120000 "):
+            # npm runs outside any sandbox and chmods bin targets and links workspaces: a symlink
+            # that leaves the checkout (bin file, workspace dir, anything) would carry that outside.
+            target = (tree / path).resolve()
+            if target != root and root not in target.parents:
+                return {"status": "skipped", "reason": f"tracked symlink {_clean(path, 120)} leaves the checkout"}
     targets = install_dirs(tree)
     if targets is None:
         return {"status": "skipped", "reason": "unreadable package-lock.json"}
-    root = tree.resolve()
     for prefix in targets:
         place = (tree / prefix).resolve() if prefix else root
         if place != root and root not in place.parents:
