@@ -861,30 +861,48 @@ def install_dependencies(
         if not (CREDENTIAL_ENV_RE.search(name.upper()) or URL_CREDENTIAL_RE.search(value))
     }
     started = time.monotonic()
+    failure: str | None = None
     try:
         # Own session + subreaper: a timeout kills npm and every git or npm process it started.
         done = _run_process([npm, *NPM_CI_COMMAND[1:]], input=None, cwd=str(tree), env=env, timeout=NPM_CI_TIMEOUT)
+        if done.returncode != 0:
+            failure = _clean(done.stderr or done.stdout, 400) or f"npm ci exited {done.returncode}"
     except subprocess.TimeoutExpired:
-        return {"status": "failed", "error": f"npm ci timed out after {NPM_CI_TIMEOUT}s"}
+        failure = f"npm ci timed out after {NPM_CI_TIMEOUT}s"
     except OSError as exc:
-        return {"status": "failed", "error": _clean(str(exc), 300)}
+        failure = _clean(str(exc), 300)
     seconds = round(time.monotonic() - started, 1)
-    # npm's bin linking chmods bin files and rewrites CRLF shebangs even with --ignore-scripts:
-    # put tracked files back so the agent starts on the exact commit and none of it gets committed.
-    changed = _git(tree, *git_args, "status", "--porcelain", "-z", "--untracked-files=all")
-    restored = sorted({entry[3:] for entry in changed.stdout.split("\0") if len(entry) > 3})
-    if changed.returncode != 0 or restored:
-        reset = _git(tree, *git_args, "reset", "-q", "--hard", "HEAD")
-        clean = _git(tree, *git_args, "clean", "-fdq")  # untracked only; ignored node_modules stays
-        after = _git(tree, *git_args, "status", "--porcelain", "--untracked-files=all")
-        if changed.returncode or reset.returncode or clean.returncode or after.returncode or after.stdout.strip():
-            return {"status": "failed", "seconds": seconds, "error": "npm changed files that could not be restored"}
-    if done.returncode != 0:
-        return {"status": "failed", "seconds": seconds, "error": _clean(done.stderr or done.stdout, 400)}
-    result: dict[str, Any] = {"status": "installed", "seconds": seconds}
+    # Whatever npm did before it finished, failed or was killed: put the tree back first.
+    restored = _restore_after_install(tree, git_args)
+    if restored is None:
+        return {"status": "failed", "seconds": seconds, "error": "npm changed files that could not be restored"}
+    result: dict[str, Any] = (
+        {"status": "failed", "seconds": seconds, "error": failure} if failure
+        else {"status": "installed", "seconds": seconds}
+    )
     if restored:
         result["restored"] = [_clean(path, 200) for path in restored[:20]]
     return result
+
+
+def _restore_after_install(tree: Path, git_args: tuple[str, ...]) -> list[str] | None:
+    """Reset tracked files and clean untracked ones npm left; the ignored node_modules stays.
+
+    npm's bin linking chmods bin files and rewrites CRLF shebangs even with --ignore-scripts, so
+    the agent would start off the exact commit and the dispatcher could commit that. Returns the
+    paths put back, or None when the tree could not be made clean."""
+    changed = _git(tree, *git_args, "status", "--porcelain", "-z", "--untracked-files=all")
+    if changed.returncode != 0:
+        return None
+    restored = sorted({entry[3:] for entry in changed.stdout.split("\0") if len(entry) > 3})
+    if not restored:
+        return []
+    reset = _git(tree, *git_args, "reset", "-q", "--hard", "HEAD")
+    clean = _git(tree, *git_args, "clean", "-fdq")
+    after = _git(tree, *git_args, "status", "--porcelain", "--untracked-files=all")
+    if reset.returncode or clean.returncode or after.returncode or after.stdout.strip():
+        return None
+    return restored
 
 
 def install_dirs(tree: Path) -> list[str] | None:
