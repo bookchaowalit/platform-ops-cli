@@ -33,5 +33,5 @@ Commands: `task --list`. Python entrypoints run through `scripts/setup/run-pytho
 * `income_streams` and `ventures/`: the `business-catalog` repository.
 * Registry guards (`repository_catalog_guard`, `repo_roadmap_*`, `system_repository_guard`,
   `module_boundary_guard`, `platform_repository_guard`, `book_dev_structure_guard`,
-  `workspace_boundary_guard`, `systems_status`) and the agent-harness hook scripts stay in
-  `bookchaowalit/solo-empire`, next to the registry they validate.
+  `workspace_boundary_guard`, `systems_status`) and the agent-harness hook scripts live in
+  `bookchaowalit/bookchaowalit-empire` (moved from solo-empire on 2026-11-12), next to the registry they validate.

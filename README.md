@@ -6,8 +6,8 @@ Operations tooling for Solo Empire: the Python scripts behind the daily workflow
 This repository was split out of the `solo-empire` registry repository on 2026-10-11. **The files were
 copied, not moved with `git subtree`: everything before the split keeps its history in
 `bookchaowalit/solo-empire`** (`infra/`, `Makefile`, `empire`, `data/indexes/task-command-ownership.json`,
-the former `.github/workflows`). The registry repository now only holds `repository-catalog/` and the
-agent-harness hooks; it is **not** a dependency of this repository.
+the former `.github/workflows`). The registry and the agent-harness hooks now live in
+`bookchaowalit/bookchaowalit-empire` (moved from solo-empire on 2026-11-12); it is **not** a dependency of this repository.
 
 ## Run the checks
 

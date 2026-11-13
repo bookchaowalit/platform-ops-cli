@@ -30,6 +30,6 @@ Tests that need a sibling repository (`architecture-docs`, `knowledge-base`, `ag
 through `support/siblings.py` (`SOLO_<NAME>_ROOT` or `../<repo>`) and print `SKIP` / `skipped` when it is absent,
 so a fresh clone passes with `task test`. No test reads a registry-hub checkout.
 
-The agent-harness hook tests and the registry guard tests live in `bookchaowalit/solo-empire`;
+The agent-harness hook tests and the registry guard tests live in `bookchaowalit/bookchaowalit-empire`;
 skill governance tests live in `bookchaowalit/platform-agent-skills`; the mcp-aggregator tests (including the three that drive
 `infra/cli.ts` from this repository) live in `bookchaowalit/platform-mcp-aggregator`.
