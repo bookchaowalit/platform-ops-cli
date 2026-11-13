@@ -160,7 +160,7 @@ again. Peak memory is the sum of the jobs running at once, so a busy day costs m
 | `runner-multi` | `railway-venture-freelance-seo` | repo | `bookchaowalit/venture-freelance-seo` |
 | `runner-multi` | `railway-venture-saas` | repo | `bookchaowalit/venture-saas` |
 | `runner-multi` | `railway-venture-job-agency` | repo | `bookchaowalit-agency/venture-job-agency` |
-| `runner-multi` | `railway-solo-empire` | repo | `bookchaowalit/solo-empire` |
+| `runner-multi` | `railway-solo-empire` | repo | `bookchaowalit/solo-empire` (archived 2026-11-13; removed from `local/runners.txt`, drop from Railway `RUNNERS` on its next redeploy) |
 
 On 2026-10-24 `commerce-digital-products-web` and `marketing-linerichmenu-web` moved from their
 organizations to the personal account (Vercel Hobby refuses Git links to private organization

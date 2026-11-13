@@ -15,7 +15,6 @@ venture-freelance-dev=https://github.com/bookchaowalit/venture-freelance-dev
 venture-freelance-seo=https://github.com/bookchaowalit/venture-freelance-seo
 venture-saas=https://github.com/bookchaowalit/venture-saas
 venture-job-agency=https://github.com/bookchaowalit-agency/venture-job-agency
-solo-empire=https://github.com/bookchaowalit/solo-empire
 # 2026-11-03: org runners for the org hubs (any private repo in the org can use them) and repo
 # runners for the personal-account hubs.
 org-ar=https://github.com/bookchaowalit-ar
