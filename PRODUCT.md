@@ -47,8 +47,9 @@ are found through `SOLO_*_ROOT` variables or `../<repository>`.
   lookups.
 - `task diary` never stores raw prompts, responses, secrets or private transcripts; it needs the
   `reporting-reader` token (Infisical `/empire-platform` `EMPIRE_AUTOMATION_TOKEN_REPORTING_READER`,
-  renewed weekly by `token-rotate`): run it under
-  `infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /empire-platform -- task diary -- …`.
+  renewed weekly by `token-rotate`). Pass only that one token, not the whole folder (which also
+  holds other platform credentials):
+  `EMPIRE_AUTOMATION_TOKEN_REPORTING_READER="$(infisical secrets get EMPIRE_AUTOMATION_TOKEN_REPORTING_READER --projectId "$INFISICAL_PROJECT_ID" --env dev --path /empire-platform --plain --silent)" task diary -- …`.
 - Out of scope: hosted schedulers (crons run on Railway or GitHub Actions in their own repos).
 
 ## Measures
