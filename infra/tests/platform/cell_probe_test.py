@@ -27,6 +27,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.end_headers()
             return
+        if self.path.startswith("/v1/health-metrics"):
+            body = json.dumps({"error": "gateway_required"}).encode()
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/v1/journal-entries"):
             self.send_response(403)
             self.end_headers()
@@ -60,6 +67,14 @@ class CellProbeTest(unittest.TestCase):
 
     def test_deny_cell_must_answer_403(self):
         self.assertTrue(cell_probe.probe("diary", self.url, "test-token")["ok"])
+
+    def test_gateway_required_is_not_a_deny_pass(self):
+        result = cell_probe.probe("health", self.url, "test-token")
+        self.assertFalse(result["ok"])
+        self.assertEqual((result["status"], result["error"]), (403, "gateway_required"))
+
+    def test_probes_go_through_the_gateway_by_default(self):
+        self.assertEqual(cell_probe.gateway_urls(["time"]), {"time": f"{cell_probe.GATEWAY_URL}/v1/time"})
 
     def test_wrong_token_fails(self):
         result = cell_probe.probe("goals", self.url, "wrong")

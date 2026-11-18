@@ -14,7 +14,12 @@ Only the status and the number of rows are reported; record contents are never
 printed. The token comes from ``EMPIRE_AUTOMATION_TOKEN_DEPLOY_VERIFIER`` or
 ``~/.config/empire-platform/tokens/deploy-verifier.jwt`` (owner-only file).
 
-    python3 infra/scripts/platform/cell_probe.py [--json] [--cells goals projects]
+    python3 infra/scripts/platform/cell_probe.py [--json] [--cells goals projects] [--direct]
+
+Requests go through the edge gateway (``https://gateway.bookchaowalit.com/v1/<cell>``,
+``EMPIRE_GATEWAY_URL`` to override), because cells in SPEC-002 ``enforce`` refuse direct calls
+with 403 ``gateway_required``. That 403 never counts as a ``deny`` pass: it is reported as
+``gateway_required``. ``--direct`` probes the registry URLs instead.
 
 Exit code: 0 when every probed cell answers as expected, 1 otherwise.
 """
@@ -69,6 +74,7 @@ CELLS: dict[str, tuple[str, str]] = {
 }
 EXPECTED_STATUS = {"read": 200, "deny": 403}
 TIMEOUT_S = 60  # serverless cells may be waking up
+GATEWAY_URL = os.environ.get("EMPIRE_GATEWAY_URL", "https://gateway.bookchaowalit.com").rstrip("/")
 
 
 def automation_token(name: str) -> str:
@@ -89,6 +95,10 @@ def cell_urls() -> dict[str, str]:
     return {s["id"]: s["url"] for s in systems if s.get("status") == "online" and s.get("url")}
 
 
+def gateway_urls(cells: list[str]) -> dict[str, str]:
+    return {cell: f"{GATEWAY_URL}/v1/{cell}" for cell in cells}
+
+
 def probe(cell: str, base_url: str, token: str) -> dict:
     plural, expect = CELLS[cell]
     request = urllib.request.Request(f"{base_url}/v1/{plural}?limit=1",
@@ -103,6 +113,9 @@ def probe(cell: str, base_url: str, token: str) -> dict:
             rows = len(items) if isinstance(items, list) else None
     except urllib.error.HTTPError as err:
         status = err.code
+        if status == 403 and _is_gateway_required(err):
+            return {"cell": cell, "expect": expect, "status": status, "ok": False, "error": "gateway_required",
+                    "seconds": round(time.perf_counter() - started, 2)}
     except (urllib.error.URLError, TimeoutError) as err:
         status, rows = 0, None
         return {"cell": cell, "expect": expect, "status": status, "ok": False,
@@ -112,14 +125,23 @@ def probe(cell: str, base_url: str, token: str) -> dict:
             "seconds": round(time.perf_counter() - started, 2)}
 
 
+def _is_gateway_required(err: urllib.error.HTTPError) -> bool:
+    try:
+        body = json.loads(err.read(4096) or b"{}")
+    except (ValueError, OSError):
+        return False
+    return isinstance(body, dict) and body.get("error") == "gateway_required"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--cells", nargs="*", choices=sorted(CELLS), help="probe only these cells")
+    parser.add_argument("--direct", action="store_true", help="probe the registry URLs, not the gateway")
     args = parser.parse_args(argv)
 
-    urls = cell_urls()
     wanted = args.cells or sorted(CELLS)
+    urls = cell_urls() if args.direct else gateway_urls(wanted)
     missing = [c for c in wanted if c not in urls]
     try:
         token = automation_token(AUTOMATION)
