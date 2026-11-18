@@ -46,7 +46,9 @@ are found through `SOLO_*_ROOT` variables or `../<repository>`.
 - The quality runner installs nothing, deploys nothing and makes no live API or credential
   lookups.
 - `task diary` never stores raw prompts, responses, secrets or private transcripts; it needs the
-  `reporting-reader` token, which is not set yet (owner action).
+  `reporting-reader` token (Infisical `/empire-platform` `EMPIRE_AUTOMATION_TOKEN_REPORTING_READER`,
+  renewed weekly by `token-rotate`): run it under
+  `infisical run --projectId "$INFISICAL_PROJECT_ID" --env dev --path /empire-platform -- task diary -- …`.
 - Out of scope: hosted schedulers (crons run on Railway or GitHub Actions in their own repos).
 
 ## Measures
@@ -54,4 +56,4 @@ are found through `SOLO_*_ROOT` variables or `../<repository>`.
 - `task test:strict` result on `main`: skips and partials (target: 0 outside documented
   sibling-checkout cases).
 - Core quality gate evidence present for every release of the four core targets.
-- Diary entries recorded per working day once `reporting-reader` is set [ต้องยืนยัน].
+- Diary entries recorded per working day (`reporting-reader` verified 2026-11-18).
