@@ -24,6 +24,12 @@ tasks:
     cmds:
       - python3 scripts/setup/run-python3.py scripts/workflows/daily_diary.py {{.CLI_ARGS}}
 
+  diary:hosted:
+    desc: Record a diary entry with only the reporting-reader token from Infisical
+    dir: infra
+    cmds:
+      - bash scripts/workflows/diary-with-token.sh {{.CLI_ARGS}}
+
   diary:summary:
     desc: Summarize diary activity
     dir: infra
