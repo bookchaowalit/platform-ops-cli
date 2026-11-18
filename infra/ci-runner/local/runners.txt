@@ -30,3 +30,4 @@ org-website=https://github.com/bookchaowalit-website
 personal-hub=https://github.com/bookchaowalit/personal-hub
 bookchaowalit-empire=https://github.com/bookchaowalit/bookchaowalit-empire
 ai-stack=https://github.com/bookchaowalit/ai-stack
+finance-suite-web=https://github.com/bookchaowalit/finance-suite-web
