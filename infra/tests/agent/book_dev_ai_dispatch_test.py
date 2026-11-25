@@ -170,6 +170,17 @@ def structured_review_tests(tmp: Path) -> None:
     quoted = json.dumps({"verdict": "PASS", "findings": [{"severity": "non-blocking", "location": "a.py:1",
                                                            "evidence": "says VERDICT: BLOCKING", "fix": "f"}]})
     assert structured_review(quoted)[1] == "pass"
+    extra = json.dumps({"verdict": "PASS", "findings": [], "note": "x"})
+    assert structured_review(extra)[1] == "unknown", "keys outside the schema"
+    extra_finding = json.dumps({"verdict": "PASS", "findings": [{"severity": "non-blocking", "location": "a",
+                                                                 "evidence": "e", "fix": "f", "risk": "x"}]})
+    assert structured_review(extra_finding)[1] == "unknown"
+    assert structured_review('{"verdict": "BLOCKING", "verdict": "PASS", "findings": []}')[1] == "unknown", \
+        "a duplicate key cannot turn BLOCKING into PASS"
+    multi = json.dumps({"verdict": "BLOCKING", "findings": [{"severity": "blocking", "location": "a.py:1",
+                                                             "evidence": "line one\nline two", "fix": "f"}]})
+    report, verdict = structured_review(multi)
+    assert verdict == "blocking" and "line one\n    line two" in report, report
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
         command = build_provider_command("codex", prompt_file=tmp / "p.md", mode="plan", max_turns=2, cwd=tmp,
                                          last_message_path=tmp / "l.md", output_schema=tmp / "s.json")
@@ -263,7 +274,9 @@ def build_review_tests(tmp: Path) -> None:
             report = dispatch(**common)
         assert report["status"] == "dispatched", report
         assert [c["label"] for c in calls] == ["claude-build", "codex-review-0", "claude-fix-1", "codex-review-1"]
-        assert calls[1]["mode"] == "plan" and "VERDICT" in calls[1]["prompt"]
+        # A Codex reviewer is told to answer only in the review schema, not with a VERDICT line.
+        assert calls[1]["mode"] == "plan" and "only a JSON object" in calls[1]["prompt"]
+        assert "VERDICT" not in calls[1]["prompt"]
         # Each review runs in its own detached checkout of the exact commit, removed afterwards.
         assert calls[1]["detached"] and calls[1]["cwd"] != calls[0]["cwd"] and not calls[1]["cwd"].exists()
         assert calls[1]["isolated"] and not calls[0]["isolated"]
