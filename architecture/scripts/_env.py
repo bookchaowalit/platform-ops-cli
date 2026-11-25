@@ -56,6 +56,18 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
 
 
 PROJECT_ROOT = architecture_root()
+if (os.environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip():
+    # A relative override means "from where the command was called"; child processes that run in
+    # another folder (cwd=PROJECT_ROOT) must get the same tree, so pass the resolved path on.
+    os.environ["SOLO_ARCHITECTURE_ROOT"] = str(PROJECT_ROOT)
+
+# A guard pointed at a folder that does not exist would check nothing and pass (0 links, an empty
+# catalog). Stop instead; only the document-free tests opt out (SOLO_ARCHITECTURE_ALLOW_MISSING=1).
+if not PROJECT_ROOT.is_dir() and os.environ.get("SOLO_ARCHITECTURE_ALLOW_MISSING") != "1":
+    raise SystemExit(
+        f"architecture documents not found at {PROJECT_ROOT}: set SOLO_ARCHITECTURE_ROOT to an "
+        "architecture-docs checkout or a store snapshot"
+    )
 
 # Workspace documentation (projects/, roles/, learning/, quiz/, goals/ ...) lives in
 # bookchaowalit/knowledge-base; override with SOLO_KNOWLEDGE_ROOT.

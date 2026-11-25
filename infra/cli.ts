@@ -10,7 +10,7 @@
  *   npx tsx infra/cli.ts goals              — ดู goals
  */
 
-import { mcp, MCP_ROOT } from './mcp-modules.js';
+import { mcp, MCP_ROOT, OPS_CHECKOUT } from './mcp-modules.js';
 import { createHash } from 'node:crypto';
 import { execFileSync, execSync } from 'child_process';
 import { existsSync, readdirSync, statSync } from 'fs';
@@ -96,9 +96,9 @@ async function main() {
         const adapter = await mcp('delivery-context');
         DeliveryContextError = adapter.DeliveryContextError;
         const { getDeliveryContext, parseDeliveryCliArgs } = adapter;
-        // The exporter is this checkout's own architecture/ tooling (SPEC-001), not whatever sits
-        // beside the MCP checkout; SOLO_ARCHITECTURE_TOOLS still overrides it.
-        const env = { ...process.env, SOLO_ARCHITECTURE_TOOLS: process.env.SOLO_ARCHITECTURE_TOOLS || join(REPO_ROOT, 'architecture') };
+        // The exporter is the architecture/ tooling of the checkout this CLI runs from (SPEC-001), not
+        // SOLO_OPS_ROOT or whatever sits beside the MCP checkout; SOLO_ARCHITECTURE_TOOLS overrides it.
+        const env = { ...process.env, SOLO_ARCHITECTURE_TOOLS: process.env.SOLO_ARCHITECTURE_TOOLS || join(OPS_CHECKOUT, 'architecture') };
         const result = await getDeliveryContext(parseDeliveryCliArgs(args.slice(1)), { env });
         console.log(JSON.stringify(result, null, 2));
         if (result.status !== 'ready') process.exitCode = 2;
