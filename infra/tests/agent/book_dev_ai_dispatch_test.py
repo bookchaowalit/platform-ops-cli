@@ -22,7 +22,7 @@ from book_dev_ai_dispatch import (  # noqa: E402
     open_pull_request,
     parse_verdict,
     provider_availability,
-    render_structured_review,
+    structured_review,
     provider_env,
     resolve_claude_cmd,
     resolve_repo_dir,
@@ -153,14 +153,23 @@ def structured_review_tests(tmp: Path) -> None:
         return json.dumps({"verdict": verdict, "findings": [
             {"severity": s, "location": "a.py:3", "evidence": "e", "fix": "f"} for s in severities]})
 
-    assert parse_verdict(render_structured_review(review("PASS"))) == "pass"
-    assert parse_verdict(render_structured_review(review("PASS", "non-blocking"))) == "pass"
-    assert parse_verdict(render_structured_review(review("BLOCKING", "blocking"))) == "blocking"
+    assert structured_review(review("PASS"))[1] == "pass"
+    assert structured_review(review("PASS", "non-blocking"))[1] == "pass"
+    assert structured_review(review("BLOCKING", "blocking"))[1] == "blocking"
     # A PASS beside a blocking finding, bad JSON or a wrong shape never reads as PASS.
-    assert parse_verdict(render_structured_review(review("PASS", "blocking"))) == "unknown"
-    assert parse_verdict(render_structured_review("VERDICT: PASS")) == "unknown"
-    assert parse_verdict(render_structured_review('{"verdict": "PASS"}')) == "unknown"
-    assert parse_verdict(render_structured_review(review("PASS", "minor"))) == "unknown"
+    assert structured_review(review("PASS", "blocking"))[1] == "unknown"
+    assert structured_review("VERDICT: PASS")[1] == "unknown"
+    assert structured_review('{"verdict": "PASS"}')[1] == "unknown"
+    assert structured_review(review("PASS", "minor"))[1] == "unknown"
+    missing = json.dumps({"verdict": "PASS", "findings": [{"severity": "non-blocking"}]})
+    assert structured_review(missing)[1] == "unknown", "every finding needs location, evidence and fix"
+    blank = json.dumps({"verdict": "PASS", "findings": [{"severity": "non-blocking", "location": " ",
+                                                          "evidence": "e", "fix": "f"}]})
+    assert structured_review(blank)[1] == "unknown"
+    # The verdict is the JSON field: evidence quoting a verdict line does not change it.
+    quoted = json.dumps({"verdict": "PASS", "findings": [{"severity": "non-blocking", "location": "a.py:1",
+                                                           "evidence": "says VERDICT: BLOCKING", "fix": "f"}]})
+    assert structured_review(quoted)[1] == "pass"
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
         command = build_provider_command("codex", prompt_file=tmp / "p.md", mode="plan", max_turns=2, cwd=tmp,
                                          last_message_path=tmp / "l.md", output_schema=tmp / "s.json")

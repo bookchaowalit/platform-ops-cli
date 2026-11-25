@@ -1272,34 +1272,38 @@ STRUCTURED_REVIEW_NOTE = (
 )
 
 
-def render_structured_review(text: str) -> str:
-    """A schema-shaped review as the markdown report the fix prompt and parse_verdict read.
+def structured_review(text: str) -> tuple[str, str]:
+    """A schema-shaped review as (markdown report, verdict) for the fix prompt, the PR and the owner.
 
-    Anything that is not a well-formed review (bad JSON, a wrong shape, PASS beside a blocking
-    finding) renders without a terminal verdict line, so parse_verdict returns "unknown"."""
+    The verdict comes from the JSON field, not from re-reading the report. Anything that is not a
+    well-formed review (bad JSON, a missing or non-string field, an unknown severity, PASS beside a
+    blocking finding) is "unknown", which sends the branch back instead of opening a PR."""
+    fields = ("location", "evidence", "fix")
     try:
         data = json.loads(text)
         findings = data["findings"]
         verdict = data["verdict"]
-        ok = isinstance(findings, list) and verdict in {"PASS", "BLOCKING"} and all(
-            isinstance(f, dict) and f.get("severity") in {"blocking", "non-blocking"} for f in findings
+        ok = isinstance(data, dict) and isinstance(findings, list) and verdict in {"PASS", "BLOCKING"} and all(
+            isinstance(f, dict) and f.get("severity") in {"blocking", "non-blocking"}
+            and all(isinstance(f.get(k), str) and f[k].strip() for k in fields)
+            for f in findings
         )
     except (ValueError, KeyError, TypeError):
         ok = False
     if not ok:
-        return (text or "") + "\n\n(review output did not match the review schema: verdict unknown)"
+        return (text or "") + "\n\n(review output did not match the review schema: verdict unknown)", "unknown"
     lines = []
     for f in findings:
-        lines.append(f"- [{f['severity']}] {_clean(f.get('location'), 300)}")
-        lines.append(f"  Evidence: {_clean(f.get('evidence'), 4000)}")
-        lines.append(f"  Fix: {_clean(f.get('fix'), 4000)}")
+        lines.append(f"- [{f['severity']}] {_clean(f['location'], 300)}")
+        lines.append(f"  Evidence: {_clean(f['evidence'], 4000)}")
+        lines.append(f"  Fix: {_clean(f['fix'], 4000)}")
     if not findings:
         lines.append("No findings.")
     if verdict == "PASS" and any(f["severity"] == "blocking" for f in findings):
         lines.append("(verdict PASS contradicts a blocking finding: verdict unknown)")
-    else:
-        lines.append(f"VERDICT: {verdict}")
-    return "\n".join(lines)
+        return "\n".join(lines), "unknown"
+    lines.append(f"VERDICT: {verdict}")
+    return "\n".join(lines), verdict.lower()
 
 
 def parse_verdict(text: str) -> str:
@@ -1920,8 +1924,9 @@ def build_review(
                     isolated_review=True, output_schema=schema,
                 )
                 text = _read(Path(private) / f"{label}.last-message.md")
+                structured_verdict = None
                 if schema is not None and review["status"] == "dispatched":
-                    text = render_structured_review(text)
+                    text, structured_verdict = structured_review(text)
                     # The rendered report is what the fix round, the PR body and the owner read.
                     (Path(private) / f"{label}.last-message.md").write_text(text, encoding="utf-8")
             finally:
@@ -1934,7 +1939,7 @@ def build_review(
             flow["worktree_kept"] = True
             return review["status"], results, flow
         review_texts.append(text)
-        verdict = parse_verdict(text)
+        verdict = structured_verdict or parse_verdict(text)
         flow["reviews"].append({"round": round_no, "head": head, "verdict": verdict, "report": review["last_message"]})
         if verdict == "pass":
             break
