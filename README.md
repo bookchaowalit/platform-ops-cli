@@ -73,6 +73,7 @@ or flaky cases stay blocked; never add retries/exclusions merely to make them gr
 | `infra/platform/` | cloud-provider, domain and building-block registries owned by ops |
 | `infra/cli.ts` | owner CLI (`task tasks`, `task status`); loads shared modules from the `mcp-aggregator` sibling |
 | `empire`, `Makefile` | thin facades over Task |
+| `architecture/` | architecture document tooling moved from architecture-docs (SPEC-001): `scripts/` (21 guards, catalog and delivery generators), `tests/`, `design-floor/` (checker source; CI uses the copy vendored in platform-ci-workflows), `messaging/` (outbox + relay reference code). Run `task arch:check` with `SOLO_ARCHITECTURE_ROOT` pointing at the documents |
 
 ## Sibling repositories (no path back to the hub)
 
@@ -82,7 +83,7 @@ Siblings are looked up as `../<repo>` next to this checkout, or through `SOLO_<N
 | Variable | Default | Used for |
 |---|---|---|
 | `SOLO_KNOWLEDGE_ROOT` | `../knowledge-base` | diary entries (`diary/entries`), roles, goals, learning, quiz |
-| `SOLO_ARCHITECTURE_ROOT` | `../architecture-docs` | docs, systems, operations, templates read by the contract guards |
+| `SOLO_ARCHITECTURE_ROOT` | `../architecture-docs` (for `architecture/`: `../../private/architecture-docs`) | docs, systems, operations, templates read by the contract guards and by `architecture/` |
 | `SOLO_SKILLS_ROOT` | `../platform-agent-skills` | skill packages |
 | `SOLO_MCP_ROOT` | `../platform-mcp-aggregator` | `infra/cli.ts` imports `src/*.ts` from here (same module instances as the MCP server) |
 | `SOLO_REGISTRY_DIR` | *(none)* | the registry repository's `repository-catalog` folder; tools that read `online-systems.yaml`, `runtime-boundaries.yaml`, `docpack-coverage.yaml` need it and skip clearly when unset |

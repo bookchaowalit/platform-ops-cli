@@ -37,6 +37,20 @@ jobs:
         export PATH="$HOME/.local/bin:$PATH"
         python tests/run_all.py --jobs 4
 
+  architecture-python:
+    # Architecture document tooling (architecture/, SPEC-001). The documents are private, so here
+    # only the tests that need none run; architecture-docs CI runs the full `task check` against the
+    # documents with this repository pinned at a commit (bump it there after changing architecture/).
+    uses: bookchaowalit/platform-ci-workflows/.github/workflows/ci-python.yml@87dc5e1c7e0416886a6371d5a101bb2ccba38edd # v1.1.1
+    with:
+      working-directory: architecture
+      python-version: "3.12"
+      install-command: uv pip install "PyYAML>=6,<7" "go-task-bin==3.54.0"
+      lint-command: ""
+      format-check: false
+      typecheck-command: ""
+      test-command: task test:standalone
+
   infra-node:
     uses: bookchaowalit/platform-ci-workflows/.github/workflows/ci-node.yml@87dc5e1c7e0416886a6371d5a101bb2ccba38edd # v1.1.1
     with:

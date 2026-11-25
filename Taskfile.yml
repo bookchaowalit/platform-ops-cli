@@ -74,6 +74,10 @@ includes:
     flatten: true
     vars:
       BOOK_DEV_GITHUB: *book_dev_github
+  arch:
+    # Architecture document tooling (SPEC-001): `task arch:check`, `task arch:docs:catalog`, ...
+    taskfile: architecture/Taskfile.yml
+    dir: architecture
 
 tasks:
   default:

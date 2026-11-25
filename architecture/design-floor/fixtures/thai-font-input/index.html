@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ร้านหนังสือตัวอย่าง</title>
+  <link rel="stylesheet" href="/tokens.css">
+  <style>
+    @font-face { font-family: "Noto Sans Thai"; font-weight: 400; font-display: swap;
+      src: url("/node_modules/@fontsource/noto-sans-thai/files/noto-sans-thai-thai-400-normal.woff2") format("woff2"); unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
+    @font-face { font-family: "Noto Sans Thai"; font-weight: 400; font-display: swap;
+      src: url("/node_modules/@fontsource/noto-sans-thai/files/noto-sans-thai-latin-400-normal.woff2") format("woff2"); unicode-range: U+0000-00FF; }
+    @font-face { font-family: "Noto Sans Thai"; font-weight: 700; font-display: swap;
+      src: url("/node_modules/@fontsource/noto-sans-thai/files/noto-sans-thai-thai-700-normal.woff2") format("woff2"); unicode-range: U+0E01-0E5B, U+200C-200D, U+25CC; }
+    body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-sans); line-height: var(--leading-thai); }
+    h1, h2 { line-height: var(--leading-thai-heading); }
+    .skip { position: absolute; left: var(--space-2); top: -4rem; padding: var(--space-2) var(--space-4); background: var(--color-accent); color: var(--color-accent-fg); }
+    .skip:focus { top: var(--space-2); }
+    header nav { display: flex; gap: var(--space-4); padding: var(--space-4); }
+    header nav a { display: inline-block; padding: var(--space-2) var(--space-3); color: var(--color-accent); }
+    main { max-width: 40rem; margin: 0 auto; padding: var(--space-6) var(--space-4); }
+    a { color: var(--color-accent); }
+    button { min-height: var(--target-touch); padding: 0 var(--space-4); border: 0; border-radius: var(--radius-md); background: var(--color-accent); color: var(--color-accent-fg); font: inherit; }
+    .badge { display: inline-block; animation: pulse var(--duration-slow) var(--ease-out) 1; }
+    @keyframes pulse { from { opacity: 0.4; } to { opacity: 1; } }
+    footer { padding: var(--space-6) var(--space-4); color: var(--color-fg-muted); }
+
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">ข้ามไปยังเนื้อหาหลัก</a>
+  <header>
+    <nav aria-label="เมนูหลัก">
+      <a href="#books">หนังสือ</a>
+      <a href="#about">เกี่ยวกับเรา</a>
+    </nav>
+  </header>
+  <main id="main">
+    <h1>ร้านหนังสือตัวอย่าง</h1>
+    <p>หน้านี้ใช้ทดสอบเกณฑ์คุณภาพขั้นต่ำของการออกแบบ อ่าน<a href="#about">รายละเอียดเพิ่มเติม</a>ได้ที่ส่วนท้ายของหน้า</p>
+    <p lang="en">This sentence is English and carries its own language tag.</p>
+    <h2 id="books">หนังสือแนะนำ <span class="badge">ใหม่</span></h2>
+    <p>หนังสือเล่มนี้เหมาะสำหรับผู้เริ่มต้นที่อยากเข้าใจพื้นฐานการออกแบบที่เข้าถึงได้</p>
+    <button type="button">เพิ่มลงตะกร้า</button>
+    <h2 id="about">เกี่ยวกับเรา</h2>
+    <p>เราเป็นร้านหนังสืออิสระขนาดเล็ก</p>
+    <input aria-label="ค้นหา" placeholder="ค้นหาหนังสือ" style="font-family: monospace; min-height: 44px">
+  </main>
+  <footer>สงวนลิขสิทธิ์ ร้านหนังสือตัวอย่าง</footer>
+
+</body>
+</html>

@@ -13,12 +13,16 @@ ROOT = Path(__file__).resolve().parents[3]
 TSX = ROOT / "infra/node_modules/.bin/tsx"
 MCP = Path(os.environ.get("SOLO_MCP_ROOT", ROOT.parent / "platform-mcp-aggregator"))
 ARCH = Path(os.environ.get("SOLO_ARCHITECTURE_ROOT", ROOT.parent / "architecture-docs"))
+# The exporter moved out of the document tree into this repository (architecture-docs SPEC-001);
+# the CLI passes it to the MCP adapter itself, so the test does not.
+TOOLS = ROOT / "architecture"
 
 
 class DeliveryCliContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        for path in (TSX, MCP / "src/delivery-context.ts", ARCH / "scripts/delivery_context.py"):
+        for path in (TSX, MCP / "src/delivery-context.ts", TOOLS / "scripts/delivery_context.py",
+                     ARCH / "docs/registries/ROLE-CATALOG.yaml"):
             if not path.is_file():
                 raise unittest.SkipTest("delivery CLI prerequisites or owning sibling checkout unavailable")
 
@@ -27,6 +31,7 @@ class DeliveryCliContract(unittest.TestCase):
         env.update(EMPIRE_CLIENT_CONFIG="/nonexistent/delivery-contract.env",
                    EMPIRE_TASKS_API="", SOLO_EMPIRE_TASKS_BACKEND="",
                    SOLO_MCP_ROOT=str(MCP), SOLO_ARCHITECTURE_ROOT=str(ARCH))
+        env.pop("SOLO_ARCHITECTURE_TOOLS", None)
         result = subprocess.run([str(TSX), "infra/cli.ts", "delivery", *args],
                                 cwd=ROOT, env=env, capture_output=True, text=True,
                                 timeout=45, check=False)

@@ -1,0 +1,14 @@
+{
+  "aliases-shadcn": {
+    "1.0.0": "5dec7ecfc296c7a1cbf3c39f600457aa66a81a4cbbac1954385336cab91fc6b4"
+  },
+  "css-vars": {
+    "1.0.0": "e92362179934e6e30eafced619442bd111f24c7c3fe45557834075a86227ede9"
+  },
+  "preset-book-brand": {
+    "1.0.0": "9aa7df608219514ae0c4bddccdfd0535be48e9a6ee10566afb376380caa84501"
+  },
+  "tailwind-v4": {
+    "1.0.0": "c9bc132cfa9b5b1e67592a8795777ff2fd946aad3a36ecab31764224ba6843c6"
+  }
+}
