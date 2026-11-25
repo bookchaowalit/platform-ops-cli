@@ -219,7 +219,7 @@ def render_markdown(data: dict, root: Path = ROOT, role: str | None = None) -> s
         "status: generated", "description: Static context questions and evidence refinement for72 delivery steps.",
         "---", "", "# Product Delivery Refinement Steps", "",
         "สร้างจาก `systems/architecture/delivery-refinement-standard.yaml` และ canonical workflow ด้วย",
-        "`python3 scripts/delivery_refinement_flow.py --write`; ห้ามแก้ generated document ด้วยมือ", "",
+        "`task run -- scripts/delivery_refinement_flow.py --write`; ห้ามแก้ generated document ด้วยมือ", "",
         "นี่คือคำถาม วิธีตรวจ และเกณฑ์ผ่านที่กำหนดไว้ ไม่ใช่ผลตรวจ ไม่รับรอง content truth, live readiness,",
         "business acceptance หรือ release authorization (`runtime_status: not-integrated`)", "",
         "อ่าน [หลัก refinement](PRODUCT-DELIVERY-REFINEMENT.md), [flow72ขั้น](PRODUCT-DELIVERY-STEPS.md),",

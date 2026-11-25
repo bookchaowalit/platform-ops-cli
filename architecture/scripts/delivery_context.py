@@ -355,7 +355,7 @@ def render_role_map(context: dict) -> str:
         "tags: [product-delivery, roles, context, templates]", "created: 2026-10-13",
         "updated: 2026-10-13", "description: Generated truthful role coverage and static delivery context map.",
         "---", "", "# Product Delivery Role Map", "",
-        "สร้างด้วย `python3 scripts/delivery_context.py --write`; ห้ามแก้ generated document ด้วยมือ", "",
+        "สร้างด้วย `task run -- scripts/delivery_context.py --write`; ห้ามแก้ generated document ด้วยมือ", "",
         f"มี {total['roles']} roles: dedicated {total['dedicated']}, family {total['family']}; "
         f"{total['roles_with_direct_delivery_steps']} roles เป็น owner/reviewer ใน flow72ขั้น และ "
         f"{total['roles_with_family_process_only']} roles อ้างอิง family process โดยไม่มีขั้นตรงใน flowนี้", "",
@@ -396,9 +396,9 @@ def render_role_map(context: dict) -> str:
     for identifier, path in REFINEMENT_TEMPLATES.items():
         lines.append(f"- [{identifier} refinement template](../../{path})")
     lines += ["", "## Read-only tool entrypoint", "", "```bash",
-        "python3 scripts/delivery_context.py --json --view overview",
-        "python3 scripts/delivery_context.py --json --view role --role product-manager",
-        "python3 scripts/delivery_context.py --json --view refinement --step PD01",
+        "task run -- scripts/delivery_context.py --json --view overview",
+        "task run -- scripts/delivery_context.py --json --view role --role product-manager",
+        "task run -- scripts/delivery_context.py --json --view refinement --step PD01",
         "```", "", "JSON contract `solo-empire.delivery-context.v1` มี source version/hash, "
         "capability และ authority limits. Artifact view อ่านเฉพาะ registered local ID และแบ่งหน้า Unicode codepoint. "
         "เครื่องมือนี้ไม่เขียนสถานะ runtime หรืออนุมัติงาน"]

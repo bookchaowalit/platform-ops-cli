@@ -247,7 +247,7 @@ def render_matrix(data: dict, root: Path = ROOT) -> str:
         "description: Generated mapping of72 delivery steps to central document templates.",
         "---", "", "# Product Delivery Document Matrix", "",
         "สร้างจาก `systems/architecture/delivery-document-standard.yaml` ด้วย",
-        "`python3 scripts/delivery_document_pack.py --write` ห้ามแก้ตารางด้วยมือ", "",
+        "`task run -- scripts/delivery_document_pack.py --write` ห้ามแก้ตารางด้วยมือ", "",
         "ทุกงานต้องบัญชีเอกสารหลัก15ชนิดและสร้าง work-control4ชนิด; เอกสาร profile เพิ่มเมื่อเข้าเงื่อนไข", "",
         "อ่าน [มาตรฐาน document pack](PRODUCT-DELIVERY-DOCUMENT-STANDARD.md) และ",
         "[flow72ขั้น](PRODUCT-DELIVERY-STEPS.md) ประกอบ ตารางนี้ระบุชนิดเอกสาร ไม่ยืนยันว่ามีผลงานหรือผ่านการอนุมัติแล้ว", "",

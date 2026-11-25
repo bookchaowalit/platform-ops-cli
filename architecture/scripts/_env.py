@@ -27,6 +27,8 @@ def main_checkout(repo_root: Path) -> Path:
         text = marker.read_text(encoding="utf-8", errors="replace").strip()
         if text.startswith("gitdir:"):
             gitdir = Path(text[len("gitdir:"):].strip())
+            if not gitdir.is_absolute():  # git worktree add --relative-paths
+                gitdir = (marker.parent / gitdir).resolve()
             if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
                 return gitdir.parent.parent.parent
     return repo_root

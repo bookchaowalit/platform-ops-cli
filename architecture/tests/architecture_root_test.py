@@ -57,5 +57,15 @@ class ArchitectureRootTest(unittest.TestCase):
         self.assertEqual(architecture_root({}, worktree / "architecture"), private)
 
 
+    def test_linked_worktree_with_a_relative_gitdir(self) -> None:
+        main = self.base / "repositories" / "public" / "platform-ops-cli"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        private = self.base / "repositories" / "private" / "architecture-docs"
+        private.mkdir(parents=True)
+        worktree = self.base / "worktrees" / "wt"
+        (worktree / "architecture" / "scripts").mkdir(parents=True)
+        (worktree / ".git").write_text("gitdir: ../../repositories/public/platform-ops-cli/.git/worktrees/wt\n")
+        self.assertEqual(architecture_root({}, worktree / "architecture"), private.resolve())
+
 if __name__ == "__main__":
     unittest.main()

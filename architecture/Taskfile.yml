@@ -9,7 +9,13 @@ version: '3'
 
 vars:
   PY: python3
-  STANDALONE_TESTS: tests/architecture_root_test.py tests/architecture_provider_readiness_test.py tests/delivery_document_pack_test.py tests/delivery_refinement_flow_test.py tests/design_floor_drift_test.py tests/product_delivery_flow_test.py
+  # Owner folder (public/ and private/) of this repository's main clone, also from a linked worktree.
+  SCAN_ROOT:
+    sh: |
+      common=$(git -C "{{.TASKFILE_DIR}}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+        && main=$(dirname "$common") || main="{{.TASKFILE_DIR}}/.."
+      cd "$main/../.." && pwd
+  STANDALONE_TESTS: tests/architecture_root_test.py tests/archimate_dtd_test.py tests/delivery_document_pack_test.py tests/delivery_refinement_flow_test.py tests/design_floor_drift_test.py tests/product_delivery_flow_test.py
 
 tasks:
   default:
@@ -55,10 +61,9 @@ tasks:
 
   test:standalone:
     desc: Tool tests that need no architecture documents (run by this repository's CI; the full `check` runs in architecture-docs CI against the documents)
-    env:
-      SOLO_ARCHITECTURE_ROOT: /nonexistent/architecture-docs
     cmds:
-      - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; {{.PY}} "$t" || exit 1; done
+      # Set on the command: Task lets a value exported in the shell override an env: block.
+      - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; SOLO_ARCHITECTURE_ROOT=/nonexistent/architecture-docs {{.PY}} "$t" || exit 1; done
       - '{{.PY}} -m unittest discover -s messaging/tests -p "*_test.py"'
       - '{{.PY}} scripts/design_floor_drift.py --check'
 
@@ -81,12 +86,12 @@ tasks:
   design-floor:drift:
     desc: Report vendored design-floor files under ROOT (default the owner folder that holds public/ and private/; current, behind, edited, unknown)
     cmds:
-      - '{{.PY}} scripts/design_floor_drift.py --scan {{.ROOT | default (print .ROOT_DIR "/../../..")}}'
+      - '{{.PY}} scripts/design_floor_drift.py --scan {{.ROOT | default .SCAN_ROOT}}'
 
   design-floor:adoption:
     desc: Report which git repositories under ROOT adopted the design floor (config, vendored files, CI job release)
     cmds:
-      - '{{.PY}} scripts/design_floor_drift.py --adoption {{.ROOT | default (print .ROOT_DIR "/../../..")}}'
+      - '{{.PY}} scripts/design_floor_drift.py --adoption {{.ROOT | default .SCAN_ROOT}}'
 
   docs:catalog:check:
     desc: Check document catalog drift
