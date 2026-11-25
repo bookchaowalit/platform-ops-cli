@@ -202,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--adoption", nargs="+", metavar="ROOT")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
+    for name in ("scan", "adoption"):
+        roots = getattr(a, name)
+        if roots:
+            roots[:] = [str(Path(root).expanduser()) for root in roots]
+            missing = [root for root in roots if not Path(root).is_dir()]
+            if missing:
+                ap.error(f"scan root not found: {', '.join(missing)}")
     if a.stamp:
         return stamp()
     if a.check:

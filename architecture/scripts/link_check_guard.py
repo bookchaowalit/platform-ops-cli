@@ -167,7 +167,7 @@ def check_links():
                 else:
                     errors.append(f"  BROKEN: {rel_doc} -> {url}")
 
-    return errors, warnings, checked, external
+    return errors, warnings, checked, external, len(files_to_scan)
 
 
 def main():
@@ -176,7 +176,7 @@ def main():
     print("=" * 60)
     print()
 
-    errors, warnings, checked, external = check_links()
+    errors, warnings, checked, external, documents = check_links()
 
     if errors:
         print(f"BROKEN LINKS ({len(errors)}):")
@@ -195,9 +195,9 @@ def main():
         print("  All internal links are valid.")
         print()
 
-    empty = checked == 0 and external == 0
+    empty = documents == 0
     if empty:
-        print("  FAIL: no internal links found: the document root holds no documents")
+        print(f"  FAIL: no Markdown documents under {ROOT}: wrong or empty document root")
     status = "FAIL" if errors or empty else "OK"
     print(f"  Result: {status} ({len(errors)} broken, {len(warnings)} warnings)")
     print("=" * 60)

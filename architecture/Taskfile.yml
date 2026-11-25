@@ -95,13 +95,13 @@ tasks:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Report vendored design-floor files under ROOT (default the owner folder that holds public/ and private/; current, behind, edited, unknown)
     cmds:
-      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --scan "{{.ROOT | default .SCAN_ROOT}}"'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --scan {{if .ROOT}}{{.ROOT}}{{else}}"{{.SCAN_ROOT}}"{{end}}'
 
   design-floor:adoption:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Report which git repositories under ROOT adopted the design floor (config, vendored files, CI job release)
     cmds:
-      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --adoption "{{.ROOT | default .SCAN_ROOT}}"'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --adoption {{if .ROOT}}{{.ROOT}}{{else}}"{{.SCAN_ROOT}}"{{end}}'
 
   docs:catalog:check:
     dir: '{{.USER_WORKING_DIR}}'

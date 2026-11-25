@@ -64,15 +64,9 @@ for _name, _value in list(os.environ.items()):
 
 PROJECT_ROOT = architecture_root()
 
-# A guard pointed at a folder that does not exist would check nothing and pass (0 links, an empty
-# catalog). Stop instead; only the document-free tests opt out (SOLO_ARCHITECTURE_ALLOW_MISSING=1).
-# Scripts that take their own root (--root / --repo-root) check that one themselves.
-_OWN_ROOT = any(arg.split("=", 1)[0] in ("--root", "--repo-root") for arg in sys.argv[1:])
-if not PROJECT_ROOT.is_dir() and not _OWN_ROOT and os.environ.get("SOLO_ARCHITECTURE_ALLOW_MISSING") != "1":
-    raise SystemExit(
-        f"architecture documents not found at {PROJECT_ROOT}: set SOLO_ARCHITECTURE_ROOT to an "
-        "architecture-docs checkout or a store snapshot"
-    )
+# A missing or empty document root is refused by the guards that could otherwise pass on nothing
+# (link_check_guard, document_catalog); other scripts fail on the first file they cannot read, and
+# commands that take their own paths (--catalog, --root, --help) still work without a default root.
 
 # Workspace documentation (projects/, roles/, learning/, quiz/, goals/ ...) lives in
 # bookchaowalit/knowledge-base; override with SOLO_KNOWLEDGE_ROOT.
