@@ -407,6 +407,7 @@ def build_provider_command(
     guard: str = "release",
     model: str | None = None,
     effort: str | None = None,
+    output_schema: Path | None = None,
 ) -> list[str]:
     model_flag = ["-m", model] if model else []
     if provider == "grok":
@@ -464,6 +465,9 @@ def build_provider_command(
             "never",
             "--output-last-message",
             str(last_message_path),
+            # Dispatcher runs are one-shot (nothing resumes them): keep them out of Codex's session history.
+            "--ephemeral",
+            *(["--output-schema", str(output_schema)] if output_schema else []),
             "-",  # read prompt from stdin
         ]
 
@@ -697,6 +701,7 @@ def run_provider(
     guard: str = "release",
     model: str | None = None,
     effort: str | None = None,
+    output_schema: Path | None = None,
 ) -> dict[str, Any]:
     name = label or provider
     log_path = dispatch_dir / f"{name}.log"
@@ -724,6 +729,7 @@ def run_provider(
             guard=guard,
             model=model,
             effort=effort if provider == "codex" else None,
+            output_schema=output_schema if provider == "codex" else None,
         )
     except RuntimeError as exc:
         result["status"] = "unavailable"
@@ -1234,6 +1240,66 @@ If a step is impossible, say why in your report instead of improvising.
 Planner's fix plan:
 {plan}
 """
+
+
+# A Codex reviewer answers in this shape (`codex exec --output-schema`), so the verdict comes from a
+# field instead of the report's last line. Strict structured output needs every property required.
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["findings", "verdict"],
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "location", "evidence", "fix"],
+                "properties": {
+                    "severity": {"type": "string", "enum": ["blocking", "non-blocking"]},
+                    "location": {"type": "string", "description": "path:line"},
+                    "evidence": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+            },
+        },
+        "verdict": {"type": "string", "enum": ["PASS", "BLOCKING"]},
+    },
+}
+STRUCTURED_REVIEW_NOTE = (
+    "Your final answer must follow the JSON schema you were given: every finding with its severity, "
+    "path:line location, evidence and fix, then `verdict` PASS (no blocking findings) or BLOCKING."
+)
+
+
+def render_structured_review(text: str) -> str:
+    """A schema-shaped review as the markdown report the fix prompt and parse_verdict read.
+
+    Anything that is not a well-formed review (bad JSON, a wrong shape, PASS beside a blocking
+    finding) renders without a terminal verdict line, so parse_verdict returns "unknown"."""
+    try:
+        data = json.loads(text)
+        findings = data["findings"]
+        verdict = data["verdict"]
+        ok = isinstance(findings, list) and verdict in {"PASS", "BLOCKING"} and all(
+            isinstance(f, dict) and f.get("severity") in {"blocking", "non-blocking"} for f in findings
+        )
+    except (ValueError, KeyError, TypeError):
+        ok = False
+    if not ok:
+        return (text or "") + "\n\n(review output did not match the review schema: verdict unknown)"
+    lines = []
+    for f in findings:
+        lines.append(f"- [{f['severity']}] {_clean(f.get('location'), 300)}")
+        lines.append(f"  Evidence: {_clean(f.get('evidence'), 4000)}")
+        lines.append(f"  Fix: {_clean(f.get('fix'), 4000)}")
+    if not findings:
+        lines.append("No findings.")
+    if verdict == "PASS" and any(f["severity"] == "blocking" for f in findings):
+        lines.append("(verdict PASS contradicts a blocking finding: verdict unknown)")
+    else:
+        lines.append(f"VERDICT: {verdict}")
+    return "\n".join(lines)
 
 
 def parse_verdict(text: str) -> str:
@@ -1840,15 +1906,24 @@ def build_review(
                 review_prompt = build_review_prompt(
                     ticket, base=base, head=head, branch=branch, deps=dependency_note(installed)
                 )
+                schema = None
+                if reviewer == "codex":
+                    schema = Path(private) / "review.schema.json"
+                    schema.write_text(json.dumps(REVIEW_SCHEMA), encoding="utf-8")
+                    review_prompt += "\n" + STRUCTURED_REVIEW_NOTE + "\n"
                 review = run_provider(
                     reviewer, prompt=review_prompt,
                     prompt_file=write_prompt_file(review_prompt, Path(private), "prompt.md"),
                     mode="plan", dry_run=False, cwd=review_tree, label=label, model=reviewer_model,
                     effort=reviewer_effort,
                     max_turns=max_turns, timeout_sec=timeout_sec, dispatch_dir=Path(private),
-                    isolated_review=True,
+                    isolated_review=True, output_schema=schema,
                 )
                 text = _read(Path(private) / f"{label}.last-message.md")
+                if schema is not None and review["status"] == "dispatched":
+                    text = render_structured_review(text)
+                    # The rendered report is what the fix round, the PR body and the owner read.
+                    (Path(private) / f"{label}.last-message.md").write_text(text, encoding="utf-8")
             finally:
                 _git(repo_dir, *safe, "worktree", "remove", "--force", str(review_tree))
             publish(Path(private), label)

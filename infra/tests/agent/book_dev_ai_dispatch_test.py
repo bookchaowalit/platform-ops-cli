@@ -22,6 +22,7 @@ from book_dev_ai_dispatch import (  # noqa: E402
     open_pull_request,
     parse_verdict,
     provider_availability,
+    render_structured_review,
     provider_env,
     resolve_claude_cmd,
     resolve_repo_dir,
@@ -97,13 +98,24 @@ def git_repo(path: Path) -> None:
         subprocess.run(["git", "-C", str(path), *args], check=True)
 
 
+def write_review(path: Path, verdict: str, schema: Path | None, note: str = "finding") -> None:
+    """What a reviewer leaves: the review schema's JSON for a Codex reviewer, else the text report."""
+    if schema is None:
+        path.write_text(f"{note}\nVERDICT: {verdict}\n")
+        return
+    severity = "blocking" if verdict == "BLOCKING" else "non-blocking"
+    path.write_text(json.dumps({"verdict": verdict, "findings": [
+        {"severity": severity, "location": "a.py:1", "evidence": note, "fix": "fix it"}]}))
+
+
 def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str, ...] = (), leave_dirty: bool = False,
                   rewrite_base: bool = False):
     """Builder rounds commit a file; review rounds write the next verdict."""
 
     calls: list[dict] = []
 
-    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, isolated_review=False, guard="release", **_):
+    def run(provider, *, prompt, mode, dispatch_dir, cwd, label=None, prompt_file=None, isolated_review=False, guard="release",
+            output_schema=None, **_):
         calls.append({
             "isolated": isolated_review, "guard": guard, "dispatch_dir": dispatch_dir,
             "provider": provider, "mode": mode, "cwd": cwd, "label": label, "prompt": prompt,
@@ -124,11 +136,38 @@ def fake_provider(verdicts: list[str], *, commit: bool = True, files: tuple[str,
             if rewrite_base:  # fold the work into an amended base commit
                 subprocess.run(["git", "-C", str(cwd), "reset", "-q", "--soft", "HEAD~1"], check=True)
                 subprocess.run(["git", "-C", str(cwd), "commit", "-q", "--amend", "-m", "rewritten"], check=True)
-        if mode == "plan":
+        if mode == "plan" and output_schema is not None:  # a Codex reviewer answers in the review schema
+            verdict = verdicts.pop(0)
+            severity = "blocking" if verdict == "BLOCKING" else "non-blocking"
+            last.write_text(json.dumps({"verdict": verdict, "findings": [
+                {"severity": severity, "location": "a.py:1", "evidence": "finding", "fix": "fix it"}]}))
+        elif mode == "plan":
             last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
         return {"provider": provider, "status": "dispatched", "last_message": str(last)}
 
     return run, calls
+
+
+def structured_review_tests(tmp: Path) -> None:
+    def review(verdict, *severities):
+        return json.dumps({"verdict": verdict, "findings": [
+            {"severity": s, "location": "a.py:3", "evidence": "e", "fix": "f"} for s in severities]})
+
+    assert parse_verdict(render_structured_review(review("PASS"))) == "pass"
+    assert parse_verdict(render_structured_review(review("PASS", "non-blocking"))) == "pass"
+    assert parse_verdict(render_structured_review(review("BLOCKING", "blocking"))) == "blocking"
+    # A PASS beside a blocking finding, bad JSON or a wrong shape never reads as PASS.
+    assert parse_verdict(render_structured_review(review("PASS", "blocking"))) == "unknown"
+    assert parse_verdict(render_structured_review("VERDICT: PASS")) == "unknown"
+    assert parse_verdict(render_structured_review('{"verdict": "PASS"}')) == "unknown"
+    assert parse_verdict(render_structured_review(review("PASS", "minor"))) == "unknown"
+    with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
+        command = build_provider_command("codex", prompt_file=tmp / "p.md", mode="plan", max_turns=2, cwd=tmp,
+                                         last_message_path=tmp / "l.md", output_schema=tmp / "s.json")
+        assert "--ephemeral" in command, "one-shot runs stay out of Codex's session history"
+        assert command[command.index("--output-schema") + 1] == str(tmp / "s.json")
+        assert "--output-schema" not in build_provider_command(
+            "codex", prompt_file=tmp / "p.md", mode="implement", max_turns=2, cwd=tmp, last_message_path=tmp / "l.md")
 
 
 def build_review_tests(tmp: Path) -> None:
@@ -221,7 +260,9 @@ def build_review_tests(tmp: Path) -> None:
         assert calls[1]["isolated"] and not calls[0]["isolated"]
         assert {c["guard"] for c in calls if c["mode"] == "implement"} == {"branch"}, "builder runs under the branch guard"
         assert calls[0]["cwd"].parent not in calls[1]["cwd"].parents, "review checkout lives outside the builder's dirs"
-        assert Path(report["flow"]["reviews"][0]["report"]).read_text().startswith("finding")
+        # The Codex reviewer answers in the review schema; the published report is the rendered markdown.
+        rendered = Path(report["flow"]["reviews"][0]["report"]).read_text()
+        assert rendered.startswith("- [blocking] a.py:1") and rendered.endswith("VERDICT: BLOCKING"), rendered
         assert victim.read_text() == "keep me" and not Path(report["flow"]["reviews"][0]["report"]).is_symlink()
         assert calls[3]["head"] in calls[3]["prompt"] and calls[3]["head"] != calls[1]["head"]
         assert pr.call_args.kwargs["head"] == calls[3]["head"] == report["flow"]["reviews"][-1]["head"]
@@ -356,7 +397,7 @@ def build_review_tests(tmp: Path) -> None:
             if mode == "implement":
                 (cwd / f"{label}.txt").write_text(label)  # no commit: the sandbox cannot write the gitdir
             else:
-                last.write_text(f"finding\nVERDICT: {verdicts.pop(0)}\n")
+                write_review(last, verdicts.pop(0), kwargs.get("output_schema"))
             return {"provider": provider, "status": "dispatched", "last_message": str(last)}
 
         opened = {"status": "opened", "url": "https://github.com/o/r/pull/2"}
@@ -417,12 +458,12 @@ def build_review_tests(tmp: Path) -> None:
                            ("filter.x.process", str(evil)), ("filter.x.required", "true")):
             subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
 
-        def filtered_build(provider, *, mode, dispatch_dir, cwd, label=None, **_):
+        def filtered_build(provider, *, mode, dispatch_dir, cwd, label=None, output_schema=None, **_):
             if mode == "implement":
                 (cwd / ".gitattributes").write_text("*.bin filter=x\n")
                 (cwd / f"{label}.bin").write_text("data\n")
             else:
-                (dispatch_dir / f"{label}.last-message.md").write_text("ok\nVERDICT: PASS\n")
+                write_review(dispatch_dir / f"{label}.last-message.md", "PASS", output_schema, "ok")
             return {"provider": provider, "status": "dispatched", "last_message": str(dispatch_dir / f"{label}.last-message.md")}
 
         with mock.patch("book_dev_ai_dispatch.run_provider", side_effect=filtered_build), mock.patch(
@@ -463,7 +504,7 @@ def build_review_tests(tmp: Path) -> None:
                 if mode == "implement":
                     (cwd / f"{label}.txt").write_text(label)
                 else:
-                    last.write_text(f"finding {label}\nVERDICT: {verdict_list.pop(0)}\n")
+                    write_review(last, verdict_list.pop(0), kwargs.get("output_schema"), f"finding {label}")
                 return {"provider": provider, "status": "dispatched", "last_message": str(last)}
             return run, seen
 
@@ -909,10 +950,10 @@ def planner_tests(tmp: Path) -> None:
 
     reviews: list[dict] = []
 
-    def fake_review(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
+    def fake_review(provider, *, prompt, mode, dispatch_dir, cwd, label=None, output_schema=None, **_):
         reviews.append({"label": label, "prompt": prompt, "files": sorted(p.name for p in cwd.rglob("*") if p.is_file() and ".git" not in p.parts)})
         last = dispatch_dir / f"{label}.last-message.md"
-        last.write_text("ok\nVERDICT: PASS\n")
+        write_review(last, "PASS", output_schema, "ok")
         return {"provider": provider, "status": "dispatched", "last_message": str(last)}
 
     opened = {"status": "opened", "url": "https://github.com/o/r/pull/9"}
@@ -954,14 +995,14 @@ def planner_tests(tmp: Path) -> None:
         one = [plan[0]]
         builds: list[str] = []
 
-        def one_flow(provider, *, prompt, mode, dispatch_dir, cwd, label=None, **_):
+        def one_flow(provider, *, prompt, mode, dispatch_dir, cwd, label=None, output_schema=None, **_):
             last = dispatch_dir / f"{label}.last-message.md"
             if mode == "implement":
                 builds.append(prompt)
                 (cwd / "src" / "api").mkdir(parents=True, exist_ok=True)
                 (cwd / "src" / "api" / "y.py").write_text("y")
             else:
-                last.write_text("ok\nVERDICT: PASS\n")
+                write_review(last, "PASS", output_schema, "ok")
             return {"provider": provider, "status": "dispatched", "last_message": str(last)}
 
         with mock.patch("book_dev_ai_dispatch.run_planner", return_value=(one, planned)), \
@@ -1416,6 +1457,7 @@ def main() -> int:
             assert resolve_claude_cmd() is None
 
     with tempfile.TemporaryDirectory() as temp_dir:
+        structured_review_tests(Path(temp_dir))
         build_review_tests(Path(temp_dir))
     with tempfile.TemporaryDirectory() as temp_dir:
         description_tests(Path(temp_dir))
