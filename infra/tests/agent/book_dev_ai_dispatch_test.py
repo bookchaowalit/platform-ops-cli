@@ -184,7 +184,7 @@ def structured_review_tests(tmp: Path) -> None:
     with mock.patch("book_dev_ai_dispatch.resolve_codex_cmd", return_value=["codex"]):
         command = build_provider_command("codex", prompt_file=tmp / "p.md", mode="plan", max_turns=2, cwd=tmp,
                                          last_message_path=tmp / "l.md", output_schema=tmp / "s.json")
-        assert "--ephemeral" in command, "one-shot runs stay out of Codex's session history"
+        assert "--ephemeral" not in command, "ai-role-report reads token usage from the saved session"
         assert command[command.index("--output-schema") + 1] == str(tmp / "s.json")
         assert "--output-schema" not in build_provider_command(
             "codex", prompt_file=tmp / "p.md", mode="implement", max_turns=2, cwd=tmp, last_message_path=tmp / "l.md")

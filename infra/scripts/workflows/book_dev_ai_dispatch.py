@@ -465,8 +465,7 @@ def build_provider_command(
             "never",
             "--output-last-message",
             str(last_message_path),
-            # Dispatcher runs are one-shot (nothing resumes them): keep them out of Codex's session history.
-            "--ephemeral",
+            # Not --ephemeral: ai-role-report reads builder/reviewer token usage from the saved session.
             *(["--output-schema", str(output_schema)] if output_schema else []),
             "-",  # read prompt from stdin
         ]
