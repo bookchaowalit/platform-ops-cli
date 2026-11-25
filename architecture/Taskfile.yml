@@ -1,0 +1,171 @@
+version: '3'
+
+# Architecture document tooling: the guards, generators and tests that check the architecture
+# documents. Moved here from bookchaowalit/architecture-docs at 3c7e564 (SPEC-001 phase 1, knowledge
+# store plans/architecture-docs-store/). The documents themselves are not in this repository: point
+# SOLO_ARCHITECTURE_ROOT at an architecture-docs checkout or a store snapshot (default: the
+# architecture-docs clone beside this one, ../../private/architecture-docs). From the repository
+# root: `task arch:check`. Guards that need other sibling checkouts skip with a WARN.
+
+vars:
+  PY: python3
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  check:
+    desc: Run every documentation guard and the tool tests (the doc part of the old `task docs:check`)
+    cmds:
+      - task: docs:check
+      - task: test
+
+  docs:check:
+    desc: Run the documentation guards
+    cmds:
+      - task: templates:check
+      - task: matrices:check
+      - task: architecture:providers:check
+      - task: lifecycle:check
+      - task: ccie:check
+      - task: product-delivery:check
+      - task: delivery-documents:check
+      - task: delivery-refinement:check
+      - task: delivery-context:check
+      - task: positions:check
+      - task: roles:check
+      - task: architecture:technology-graph:check
+      - task: architecture:technology-capabilities:check
+      - task: programs:check
+      - task: reference-apps:check
+      - task: scraping:coverage:check
+      - task: free:catalogs:check
+      - task: design-floor:check
+      - task: docs:catalog:check
+      - task: docs:links:check
+      - task: metadata:check
+
+  test:
+    desc: Run the document tooling tests
+    cmds:
+      - for t in tests/*_test.py; do echo "== $t"; {{.PY}} "$t" || exit 1; done
+      - '{{.PY}} -m unittest discover -s messaging/tests -p "*_test.py"'
+
+  docs:catalog:
+    desc: Regenerate docs/DOCUMENT-CATALOG.md and data/indexes/document-catalog.json
+    cmds:
+      - '{{.PY}} scripts/document_catalog.py --write'
+
+  design-floor:check:
+    desc: Check that the ADR-0007 design-floor reference files match their stamped hashes and releases.json
+    cmds:
+      - '{{.PY}} scripts/design_floor_drift.py --check'
+
+  design-floor:test:
+    desc: Run the design-floor fixtures and check.mjs tests (needs npm ci and a Playwright Chromium in design-floor/)
+    dir: design-floor
+    cmds:
+      - npm test
+
+  design-floor:drift:
+    desc: Report vendored design-floor files under ROOT (current, behind, edited, unknown)
+    cmds:
+      - '{{.PY}} scripts/design_floor_drift.py --scan {{.ROOT | default "../.."}}'
+
+  design-floor:adoption:
+    desc: Report which git repositories under ROOT adopted the design floor (config, vendored files, CI job release)
+    cmds:
+      - '{{.PY}} scripts/design_floor_drift.py --adoption {{.ROOT | default "../.."}}'
+
+  docs:catalog:check:
+    desc: Check document catalog drift
+    cmds:
+      - '{{.PY}} scripts/document_catalog.py --check'
+
+  export:document-catalog:
+    desc: Export the portable document catalog projection
+    cmds:
+      - '{{.PY}} scripts/portable_document_export.py {{.CLI_ARGS}}'
+
+  free:saas:
+    desc: Search or import the free SaaS master catalog (import then run `task saas-catalog:catalog:sync`)
+    cmds:
+      - '{{.PY}} scripts/free_saas_catalog.py {{.CLI_ARGS}}'
+
+  free:catalogs:check:
+    desc: Check offline catalog freshness and pinned consumer evidence
+    cmds:
+      - '{{.PY}} scripts/catalog_freshness.py'
+
+  roles:function-share:
+    desc: Compare tagged role-function share with the rotation stage target
+    cmds:
+      - '{{.PY}} scripts/function_share.py {{.CLI_ARGS}}'
+
+  knowledge-api:catalog:sync:
+    desc: Write the document catalog snapshot into the sibling knowledge-api checkout (SOLO_KNOWLEDGE_API_ROOT)
+    cmds:
+      - '{{.PY}} scripts/service_catalog_sync.py sync knowledge-api'
+
+  knowledge-api:catalog:check:
+    desc: Fail when the knowledge-api snapshot is stale (skips when its checkout is absent)
+    cmds:
+      - '{{.PY}} scripts/service_catalog_sync.py check knowledge-api'
+
+  saas-catalog:catalog:sync:
+    desc: Write the free SaaS catalog snapshot into the sibling saas-catalog checkout (SOLO_SAAS_CATALOG_ROOT)
+    cmds:
+      - '{{.PY}} scripts/service_catalog_sync.py sync saas-catalog'
+
+  saas-catalog:catalog:check:
+    desc: Fail when the saas-catalog snapshot is stale (skips when its checkout is absent)
+    cmds:
+      - '{{.PY}} scripts/service_catalog_sync.py check saas-catalog'
+
+  templates:check:
+    cmds: ['{{.PY}} scripts/template_catalog_guard.py']
+  matrices:check:
+    desc: Validate the CSV-first matrix template contract
+    cmds: ['{{.PY}} scripts/matrix_template_guard.py']
+  architecture:providers:check:
+    desc: Offline readiness of catalog-info.yaml, the ArchiMate model and optional providers
+    cmds: ['{{.PY}} scripts/architecture_provider_readiness.py --offline {{.CLI_ARGS}}']
+  lifecycle:check:
+    cmds: ['{{.PY}} scripts/development_lifecycle_guard.py']
+  ccie:check:
+    desc: Check the CCIE Enterprise Infrastructure blueprint coverage registry and print progress per part
+    cmds: ['{{.PY}} scripts/ccie_blueprint_guard.py']
+  product-delivery:check:
+    desc: Validate the offline product delivery definition and generated step document
+    cmds: ['{{.PY}} scripts/product_delivery_flow.py --check']
+  delivery-documents:check:
+    desc: Validate central document standards and the generated72-step document matrix
+    cmds: ['{{.PY}} scripts/delivery_document_pack.py --check']
+  delivery-refinement:check:
+    desc: Validate static context questions and evidence refinement for72 delivery steps
+    cmds: ['{{.PY}} scripts/delivery_refinement_flow.py --check']
+  delivery-context:check:
+    desc: Validate all-role static context and its generated role map
+    cmds: ['{{.PY}} scripts/delivery_context.py --check']
+  positions:check:
+    cmds: ['{{.PY}} scripts/position_coverage_guard.py']
+  roles:check:
+    cmds: ['{{.PY}} scripts/role_coverage_guard.py']
+  architecture:technology-graph:check:
+    cmds: ['{{.PY}} scripts/technology_graph_guard.py --check']
+  architecture:technology-capabilities:check:
+    cmds: ['{{.PY}} scripts/technology_capability_guard.py']
+  programs:check:
+    cmds: ['{{.PY}} scripts/software_program_plan.py --check']
+  docs:links:check:
+    cmds: ['{{.PY}} scripts/link_check_guard.py']
+  metadata:check:
+    cmds: ['{{.PY}} scripts/metadata_catalog_guard.py']
+  reference-apps:check:
+    cmds: ['{{.PY}} scripts/reference_app_workbench.py --check']
+
+  scraping:coverage:check:
+    desc: Validate source-product permission metadata and immutable owner evidence
+    cmds:
+      - '{{.PY}} scripts/source_product_coverage.py {{.CLI_ARGS}}'

@@ -1,0 +1,28 @@
+{
+  "name": "design-floor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ADR-0007 design floor: reference tokens and the automated floor check",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "design-floor-check": "check.mjs"
+  },
+  "scripts": {
+    "check": "node check.mjs",
+    "typecheck": "tsc -p .",
+    "test": "tsc -p . && node --test test/check.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "playwright": "1.61.0"
+  },
+  "devDependencies": {
+    "@fontsource/noto-sans-thai": "5.2.5",
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,29 @@
+/* design-floor aliases-shadcn 1.0.0 sha256:5dec7ecfc296c7a1cbf3c39f600457aa66a81a4cbbac1954385336cab91fc6b4 */
+/*
+ * Lets shadcn/ui apps adopt the base tokens without renaming components:
+ * the shadcn variables read from the base names. Import after tokens.css
+ * and before app-theme.css, and remove the app's own :root/.dark blocks
+ * for these variables.
+ */
+
+:root {
+  --background: var(--color-bg);
+  --foreground: var(--color-fg);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-fg);
+  --popover: var(--color-surface);
+  --popover-foreground: var(--color-fg);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--color-accent-fg);
+  --secondary: var(--color-surface);
+  --secondary-foreground: var(--color-fg);
+  --muted: var(--color-surface);
+  --muted-foreground: var(--color-fg-muted);
+  --accent: var(--color-surface);
+  --accent-foreground: var(--color-fg);
+  --destructive: var(--color-danger);
+  --border: var(--color-border);
+  --input: var(--color-border);
+  --ring: var(--color-focus);
+  --radius: var(--radius-md);
+}

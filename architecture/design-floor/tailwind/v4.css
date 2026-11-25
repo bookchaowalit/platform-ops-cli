@@ -1,0 +1,39 @@
+/* design-floor tailwind-v4 1.0.0 sha256:c9bc132cfa9b5b1e67592a8795777ff2fd946aad3a36ecab31764224ba6843c6 */
+/*
+ * Tailwind v4 mapping for tokens.css. Import after tailwindcss and tokens.css:
+ *   @import "tailwindcss";
+ *   @import "./design-floor/tokens.css";
+ *   @import "./design-floor/tailwind/v4.css";
+ *   @import "./app-theme.css";
+ * `@theme inline` keeps utilities pointing at the variables, so values set in
+ * app-theme.css (or by data-theme at runtime) flow through.
+ */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-bg: var(--color-bg);
+  --color-surface: var(--color-surface);
+  --color-fg: var(--color-fg);
+  --color-fg-muted: var(--color-fg-muted);
+  --color-accent: var(--color-accent);
+  --color-accent-fg: var(--color-accent-fg);
+  --color-border: var(--color-border);
+  --color-focus: var(--color-focus);
+  --color-danger: var(--color-danger);
+  --color-success: var(--color-success);
+
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --ease-out: var(--ease-out);
+}
