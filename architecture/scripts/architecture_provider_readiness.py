@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from xml.parsers.expat import ExpatError, ParserCreate
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
@@ -186,6 +187,22 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
+def _refuse_dtd(data: bytes) -> None:
+    """Refuse any DTD before ElementTree sees the bytes (stdlib only, so no defusedxml).
+
+    expat itself decodes the document (UTF-8, UTF-16, a declared encoding), so a DOCTYPE or an
+    entity declaration is caught in every encoding, not only as ASCII bytes.
+    """
+    parser = ParserCreate()
+
+    def refuse(*_args: object) -> None:
+        raise ET.ParseError("DTD not allowed")
+
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.Parse(data, True)
+
+
 def validate_archimate_model(path: Path) -> dict[str, Any]:
     """Validate the checked-in ArchiMate model without requiring Archi."""
 
@@ -201,12 +218,9 @@ def validate_archimate_model(path: Path) -> dict[str, Any]:
 
     try:
         data = path.read_bytes()
-        # The model is a repository document, but refuse DTDs anyway: no entity expansion or
-        # external entity can reach the parser (stdlib only, so no defusedxml).
-        if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-            raise ET.ParseError("DTD not allowed")
+        _refuse_dtd(data)
         root = ET.fromstring(data)  # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
-    except (OSError, ET.ParseError):
+    except (OSError, ET.ParseError, ExpatError, ValueError, LookupError):  # unknown encodings fail closed
         return {
             **base,
             "state": "invalid",

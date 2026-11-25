@@ -96,7 +96,10 @@ async function main() {
         const adapter = await mcp('delivery-context');
         DeliveryContextError = adapter.DeliveryContextError;
         const { getDeliveryContext, parseDeliveryCliArgs } = adapter;
-        const result = await getDeliveryContext(parseDeliveryCliArgs(args.slice(1)));
+        // The exporter is this checkout's own architecture/ tooling (SPEC-001), not whatever sits
+        // beside the MCP checkout; SOLO_ARCHITECTURE_TOOLS still overrides it.
+        const env = { ...process.env, SOLO_ARCHITECTURE_TOOLS: process.env.SOLO_ARCHITECTURE_TOOLS || join(REPO_ROOT, 'architecture') };
+        const result = await getDeliveryContext(parseDeliveryCliArgs(args.slice(1)), { env });
         console.log(JSON.stringify(result, null, 2));
         if (result.status !== 'ready') process.exitCode = 2;
       } catch (error) {

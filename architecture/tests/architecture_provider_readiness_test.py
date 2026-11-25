@@ -117,5 +117,17 @@ class ArchitectureProviderReadinessTests(unittest.TestCase):
         self.assertNotIn("private-value", str(model))
 
 
+    def test_archimate_model_with_a_dtd_is_refused_in_any_encoding(self):
+        body = (
+            '<?xml version="1.0" encoding="{enc}"?>\n<!DOCTYPE m [<!ENTITY x "y">]>'
+            '<archimate:model xmlns:archimate="http://www.archimatetool.com/archimate" version="5.10.0"/>'
+        )
+        for encoding in ("utf-8", "utf-16", "utf-16-be"):
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "model.archimate"
+                path.write_bytes(body.format(enc=encoding).encode(encoding))
+                model = validate_archimate_model(path)
+                self.assertEqual(model["state"], "invalid")
+
 if __name__ == "__main__":
     unittest.main()

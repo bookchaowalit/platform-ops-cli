@@ -70,7 +70,7 @@ New web apps start from the template repo [bookchaowalit/web-starter](https://gi
 6. Run the check:
 
    ```bash
-   node <path-to>/architecture-docs/design-floor/check.mjs --config design-floor.json --json design-floor-report.json --shots design-floor-shots
+   node <path-to>/platform-ops-cli/architecture/design-floor/check.mjs --config design-floor.json --json design-floor-report.json --shots design-floor-shots
    ```
 
    Exit 0 means no unwaived failures. The report says which rows are still manual. A pass is not a WCAG conformance claim.

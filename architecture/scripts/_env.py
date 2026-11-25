@@ -19,21 +19,38 @@ from pathlib import Path
 TOOLS_ROOT = Path(__file__).resolve().parent.parent
 
 
+def main_checkout(repo_root: Path) -> Path:
+    """The main clone of ``repo_root``: itself, or for a linked worktree (``.git`` is a file
+    ``gitdir: <main>/.git/worktrees/<name>``) the clone it belongs to."""
+    marker = repo_root / ".git"
+    if marker.is_file():
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+        if text.startswith("gitdir:"):
+            gitdir = Path(text[len("gitdir:"):].strip())
+            if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+                return gitdir.parent.parent.parent
+    return repo_root
+
+
 def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path:
     """The architecture document tree.
 
     Order: SOLO_ARCHITECTURE_ROOT (a store snapshot or a checkout) -> the tools folder itself when
     it still sits inside the document tree (legacy layout, docs/ next to scripts/) -> the
-    architecture-docs checkout in the empire clone folder (ops-cli is under public/, the
-    documents under private/).
+    architecture-docs sibling of the platform-ops-cli clone (``../architecture-docs``) -> the
+    empire clone folder, where ops-cli is under public/ and the documents under private/. A linked
+    worktree resolves from its main clone, so it finds the same documents.
     """
     override = (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
     if (tools_root / "docs").is_dir():
         return tools_root
-    owner = tools_root.parent.parent.parent  # architecture -> platform-ops-cli -> public -> owner
-    return owner / "private" / "architecture-docs"
+    repo = main_checkout(tools_root.parent)
+    sibling = repo.parent / "architecture-docs"
+    if sibling.is_dir():
+        return sibling
+    return repo.parent.parent / "private" / "architecture-docs"
 
 
 PROJECT_ROOT = architecture_root()

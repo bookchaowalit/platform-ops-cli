@@ -9,6 +9,7 @@ version: '3'
 
 vars:
   PY: python3
+  STANDALONE_TESTS: tests/architecture_root_test.py tests/architecture_provider_readiness_test.py tests/delivery_document_pack_test.py tests/delivery_refinement_flow_test.py tests/design_floor_drift_test.py tests/product_delivery_flow_test.py
 
 tasks:
   default:
@@ -52,6 +53,15 @@ tasks:
       - for t in tests/*_test.py; do echo "== $t"; {{.PY}} "$t" || exit 1; done
       - '{{.PY}} -m unittest discover -s messaging/tests -p "*_test.py"'
 
+  test:standalone:
+    desc: Tool tests that need no architecture documents (run by this repository's CI; the full `check` runs in architecture-docs CI against the documents)
+    env:
+      SOLO_ARCHITECTURE_ROOT: /nonexistent/architecture-docs
+    cmds:
+      - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; {{.PY}} "$t" || exit 1; done
+      - '{{.PY}} -m unittest discover -s messaging/tests -p "*_test.py"'
+      - '{{.PY}} scripts/design_floor_drift.py --check'
+
   docs:catalog:
     desc: Regenerate docs/DOCUMENT-CATALOG.md and data/indexes/document-catalog.json
     cmds:
@@ -69,14 +79,14 @@ tasks:
       - npm test
 
   design-floor:drift:
-    desc: Report vendored design-floor files under ROOT (current, behind, edited, unknown)
+    desc: Report vendored design-floor files under ROOT (default the owner folder that holds public/ and private/; current, behind, edited, unknown)
     cmds:
-      - '{{.PY}} scripts/design_floor_drift.py --scan {{.ROOT | default "../.."}}'
+      - '{{.PY}} scripts/design_floor_drift.py --scan {{.ROOT | default (print .ROOT_DIR "/../../..")}}'
 
   design-floor:adoption:
     desc: Report which git repositories under ROOT adopted the design floor (config, vendored files, CI job release)
     cmds:
-      - '{{.PY}} scripts/design_floor_drift.py --adoption {{.ROOT | default "../.."}}'
+      - '{{.PY}} scripts/design_floor_drift.py --adoption {{.ROOT | default (print .ROOT_DIR "/../../..")}}'
 
   docs:catalog:check:
     desc: Check document catalog drift

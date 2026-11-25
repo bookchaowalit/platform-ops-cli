@@ -149,8 +149,11 @@ def adoption_rows(roots: list[str]) -> list[dict]:
                 dirnames[:] = []
                 continue
             if ".git" in dirnames or ".git" in filenames:
-                # A clone of the floor's own source (this repository) is not an adopter.
-                if (here / "design-floor" / "releases.json").exists():
+                # A clone of the floor's own source is not an adopter: architecture-docs before
+                # SPEC-001, platform-ops-cli (architecture/design-floor) after it.
+                if (here / "design-floor" / "releases.json").exists() or (
+                    here / "architecture" / "design-floor" / "releases.json"
+                ).exists():
                     dirnames[:] = []
                     continue
                 repos.setdefault(here, {"config": [], "files": [], "ci": ""})
