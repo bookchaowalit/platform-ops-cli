@@ -136,14 +136,15 @@ def iter_candidate_paths(root: Path = ROOT) -> Iterable[Path]:
     """Yield first-party Markdown files from Git's tracked/unignored view."""
 
     try:
-        # A store snapshot has no .git: inside an ignored folder of another repository, git would
-        # answer for that repository and list nothing. Use git only at a worktree's own top level.
-        top = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        if Path(top).resolve() != root.resolve():
-            raise FileNotFoundError(top)
+        # A store snapshot has no .git. Inside another repository's ignored folder git would answer
+        # for that repository and list nothing, so walk the disk there; anywhere git really tracks
+        # (a checkout, or a subfolder of one) keep its tracked/unignored view.
+        subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                       capture_output=True, text=True, check=True)
+        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "."],
+                                 capture_output=True, text=True, check=False)
+        if ignored.returncode == 0:
+            raise FileNotFoundError(str(root))
         result = subprocess.run(
             [
                 "git",
@@ -582,6 +583,9 @@ def main() -> int:
 
     catalog = build_catalog()
     normalize_generated_catalog_entry(catalog)
+    if args.write and not catalog["summary"]["documents"]:
+        print(f"  FAIL: no documents under {ROOT}: refusing to write an empty catalog")
+        return 1
     if args.write:
         write_outputs(catalog)
         print(f"  OK: wrote {rel(MARKDOWN_OUTPUT)}")

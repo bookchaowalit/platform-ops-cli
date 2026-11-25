@@ -159,15 +159,22 @@ def write_export(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=SOURCE)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--source", type=Path, help=f"default {SOURCE} in the document tree")
+    parser.add_argument("--output", type=Path, help=f"default {DEFAULT_OUTPUT} in the document tree")
+    parser.add_argument("--manifest", type=Path, help=f"default {DEFAULT_MANIFEST} in the document tree")
     parser.add_argument("--json", action="store_true", help="print a JSON summary")
     args = parser.parse_args()
 
-    source = args.source if args.source.is_absolute() else ROOT / args.source
-    output = args.output if args.output.is_absolute() else ROOT / args.output
-    manifest = args.manifest if args.manifest.is_absolute() else ROOT / args.manifest
+    def place(given: Path | None, default: Path) -> Path:
+        # A path the caller typed is relative to where they ran the command; defaults live in the
+        # document tree.
+        if given is not None:
+            return given.expanduser().resolve()
+        return default if default.is_absolute() else ROOT / default
+
+    source = place(args.source, SOURCE)
+    output = place(args.output, DEFAULT_OUTPUT)
+    manifest = place(args.manifest, DEFAULT_MANIFEST)
     try:
         rows, payload = write_export(source, output, manifest)
     except ValueError as exc:
