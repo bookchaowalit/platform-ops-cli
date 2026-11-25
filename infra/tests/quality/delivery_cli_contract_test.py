@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import unittest
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[3]
 TSX = ROOT / "infra/node_modules/.bin/tsx"
 MCP = Path(os.environ.get("SOLO_MCP_ROOT", ROOT.parent / "platform-mcp-aggregator"))
@@ -46,8 +48,11 @@ class DeliveryCliContract(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual("ready", payload["status"])
         roles = payload["data"]["roles"]
-        self.assertEqual(50, len(roles))
-        self.assertEqual(50, len({row["id"] for row in roles}))
+        # Every role of the live catalog, once (the count follows ROLE-CATALOG.yaml, not a pinned 50).
+        catalog = yaml.safe_load((ARCH / "docs/registries/ROLE-CATALOG.yaml").read_text(encoding="utf-8"))
+        expected = {role["id"] for role in catalog["roles"]}
+        self.assertEqual(len(expected), len(roles))
+        self.assertEqual(expected, {row["id"] for row in roles})
         self.assertEqual(10, len(payload["sources"]))
         for source in payload["sources"]:
             self.assertRegex(source["sha256"], r"^[0-9a-f]{64}$")
