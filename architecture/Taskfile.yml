@@ -16,7 +16,7 @@ vars:
       common=$(git -C "{{.TASKFILE_DIR}}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
         && main=$(dirname "$common") || main="{{.TASKFILE_DIR}}/.."
       cd "$main/../.." && pwd
-  STANDALONE_TESTS: '{{.TASKFILE_DIR}}/tests/architecture_root_test.py {{.TASKFILE_DIR}}/tests/archimate_dtd_test.py {{.TASKFILE_DIR}}/tests/delivery_document_pack_test.py {{.TASKFILE_DIR}}/tests/delivery_refinement_flow_test.py {{.TASKFILE_DIR}}/tests/design_floor_drift_test.py {{.TASKFILE_DIR}}/tests/product_delivery_flow_test.py'
+  STANDALONE_TESTS: 'architecture_root_test.py archimate_dtd_test.py delivery_document_pack_test.py delivery_refinement_flow_test.py design_floor_drift_test.py product_delivery_flow_test.py'
 
 tasks:
   default:
@@ -61,29 +61,29 @@ tasks:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Run the document tooling tests
     cmds:
-      - for t in {{.TASKFILE_DIR}}/tests/*_test.py; do echo "== $t"; {{.PY}} "$t" || exit 1; done
-      - '{{.PY}} -m unittest discover -s {{.TASKFILE_DIR}}/messaging/tests -p "*_test.py"'
+      - for t in "{{.TASKFILE_DIR}}"/tests/*_test.py; do echo "== $t"; {{.PY}} "$t" || exit 1; done
+      - '{{.PY}} -m unittest discover -s "{{.TASKFILE_DIR}}/messaging/tests" -p "*_test.py"'
 
   test:standalone:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Tool tests that need no architecture documents (run by this repository's CI; the full `check` runs in architecture-docs CI against the documents)
     cmds:
       # Set on the command: Task lets a value exported in the shell override an env: block.
-      - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; SOLO_ARCHITECTURE_ROOT=/nonexistent/architecture-docs SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} "$t" || exit 1; done
-      - '{{.PY}} -m unittest discover -s {{.TASKFILE_DIR}}/messaging/tests -p "*_test.py"'
-      - 'SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} {{.TASKFILE_DIR}}/scripts/design_floor_drift.py --check'
+      - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; SOLO_ARCHITECTURE_ROOT=/nonexistent/architecture-docs SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} "{{.TASKFILE_DIR}}/tests/$t" || exit 1; done
+      - '{{.PY}} -m unittest discover -s "{{.TASKFILE_DIR}}/messaging/tests" -p "*_test.py"'
+      - 'SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --check'
 
   docs:catalog:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Regenerate docs/DOCUMENT-CATALOG.md and data/indexes/document-catalog.json
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/document_catalog.py --write'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/document_catalog.py" --write'
 
   design-floor:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Check that the ADR-0007 design-floor reference files match their stamped hashes and releases.json
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/design_floor_drift.py --check'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --check'
 
   design-floor:test:
     desc: Run the design-floor fixtures and check.mjs tests (needs npm ci and a Playwright Chromium in design-floor/)
@@ -95,129 +95,129 @@ tasks:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Report vendored design-floor files under ROOT (default the owner folder that holds public/ and private/; current, behind, edited, unknown)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/design_floor_drift.py --scan {{.ROOT | default .SCAN_ROOT}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --scan "{{.ROOT | default .SCAN_ROOT}}"'
 
   design-floor:adoption:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Report which git repositories under ROOT adopted the design floor (config, vendored files, CI job release)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/design_floor_drift.py --adoption {{.ROOT | default .SCAN_ROOT}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --adoption "{{.ROOT | default .SCAN_ROOT}}"'
 
   docs:catalog:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Check document catalog drift
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/document_catalog.py --check'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/document_catalog.py" --check'
 
   export:document-catalog:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Export the portable document catalog projection
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/portable_document_export.py {{.CLI_ARGS}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/portable_document_export.py" {{.CLI_ARGS}}'
 
   free:saas:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Search or import the free SaaS master catalog (import then run `task saas-catalog:catalog:sync`)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/free_saas_catalog.py {{.CLI_ARGS}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/free_saas_catalog.py" {{.CLI_ARGS}}'
 
   free:catalogs:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Check offline catalog freshness and pinned consumer evidence
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/catalog_freshness.py'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/catalog_freshness.py"'
 
   roles:function-share:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Compare tagged role-function share with the rotation stage target
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/function_share.py {{.CLI_ARGS}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/function_share.py" {{.CLI_ARGS}}'
 
   knowledge-api:catalog:sync:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Write the document catalog snapshot into the sibling knowledge-api checkout (SOLO_KNOWLEDGE_API_ROOT)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/service_catalog_sync.py sync knowledge-api'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/service_catalog_sync.py" sync knowledge-api'
 
   knowledge-api:catalog:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Fail when the knowledge-api snapshot is stale (skips when its checkout is absent)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/service_catalog_sync.py check knowledge-api'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/service_catalog_sync.py" check knowledge-api'
 
   saas-catalog:catalog:sync:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Write the free SaaS catalog snapshot into the sibling saas-catalog checkout (SOLO_SAAS_CATALOG_ROOT)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/service_catalog_sync.py sync saas-catalog'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/service_catalog_sync.py" sync saas-catalog'
 
   saas-catalog:catalog:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Fail when the saas-catalog snapshot is stale (skips when its checkout is absent)
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/service_catalog_sync.py check saas-catalog'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/service_catalog_sync.py" check saas-catalog'
 
   templates:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/template_catalog_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/template_catalog_guard.py"']
   matrices:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate the CSV-first matrix template contract
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/matrix_template_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/matrix_template_guard.py"']
   architecture:providers:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Offline readiness of catalog-info.yaml, the ArchiMate model and optional providers
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/architecture_provider_readiness.py --offline {{.CLI_ARGS}}']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/architecture_provider_readiness.py" --offline {{.CLI_ARGS}}']
   lifecycle:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/development_lifecycle_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/development_lifecycle_guard.py"']
   ccie:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Check the CCIE Enterprise Infrastructure blueprint coverage registry and print progress per part
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/ccie_blueprint_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/ccie_blueprint_guard.py"']
   product-delivery:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate the offline product delivery definition and generated step document
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/product_delivery_flow.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/product_delivery_flow.py" --check']
   delivery-documents:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate central document standards and the generated72-step document matrix
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/delivery_document_pack.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/delivery_document_pack.py" --check']
   delivery-refinement:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate static context questions and evidence refinement for72 delivery steps
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/delivery_refinement_flow.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/delivery_refinement_flow.py" --check']
   delivery-context:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate all-role static context and its generated role map
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/delivery_context.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/delivery_context.py" --check']
   positions:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/position_coverage_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/position_coverage_guard.py"']
   roles:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/role_coverage_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/role_coverage_guard.py"']
   architecture:technology-graph:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/technology_graph_guard.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/technology_graph_guard.py" --check']
   architecture:technology-capabilities:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/technology_capability_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/technology_capability_guard.py"']
   programs:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/software_program_plan.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/software_program_plan.py" --check']
   docs:links:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/link_check_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/link_check_guard.py"']
   metadata:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/metadata_catalog_guard.py']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/metadata_catalog_guard.py"']
   reference-apps:check:
     dir: '{{.USER_WORKING_DIR}}'
-    cmds: ['{{.PY}} {{.TASKFILE_DIR}}/scripts/reference_app_workbench.py --check']
+    cmds: ['{{.PY}} "{{.TASKFILE_DIR}}/scripts/reference_app_workbench.py" --check']
 
   scraping:coverage:check:
     dir: '{{.USER_WORKING_DIR}}'
     desc: Validate source-product permission metadata and immutable owner evidence
     cmds:
-      - '{{.PY}} {{.TASKFILE_DIR}}/scripts/source_product_coverage.py {{.CLI_ARGS}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/source_product_coverage.py" {{.CLI_ARGS}}'

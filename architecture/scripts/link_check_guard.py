@@ -195,11 +195,14 @@ def main():
         print("  All internal links are valid.")
         print()
 
-    status = "FAIL" if errors else "OK"
+    empty = checked == 0 and external == 0
+    if empty:
+        print("  FAIL: no internal links found: the document root holds no documents")
+    status = "FAIL" if errors or empty else "OK"
     print(f"  Result: {status} ({len(errors)} broken, {len(warnings)} warnings)")
     print("=" * 60)
 
-    return 1 if errors else 0
+    return 1 if errors or empty else 0
 
 
 if __name__ == "__main__":
