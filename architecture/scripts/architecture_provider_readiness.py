@@ -200,7 +200,12 @@ def validate_archimate_model(path: Path) -> dict[str, Any]:
         return {**base, "state": "invalid", "errors": ["ไม่พบ ArchiMate model"]}
 
     try:
-        root = ET.parse(path).getroot()
+        data = path.read_bytes()
+        # The model is a repository document, but refuse DTDs anyway: no entity expansion or
+        # external entity can reach the parser (stdlib only, so no defusedxml).
+        if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+            raise ET.ParseError("DTD not allowed")
+        root = ET.fromstring(data)  # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse
     except (OSError, ET.ParseError):
         return {
             **base,
