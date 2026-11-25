@@ -137,13 +137,16 @@ def iter_candidate_paths(root: Path = ROOT) -> Iterable[Path]:
 
     try:
         # A store snapshot has no .git. Inside another repository's ignored folder git would answer
-        # for that repository and list nothing, so walk the disk there; anywhere git really tracks
-        # (a checkout, or a subfolder of one) keep its tracked/unignored view.
+        # for that repository and list nothing, so walk the disk there. Anywhere git tracks files
+        # (a checkout, a subfolder of one, even an ignored folder with tracked files) keep git's
+        # tracked/unignored view, so files git ignores stay out.
         subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
                        capture_output=True, text=True, check=True)
         ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "."],
                                  capture_output=True, text=True, check=False)
-        if ignored.returncode == 0:
+        tracked = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--", "."],
+                                 capture_output=True, text=True, check=False)
+        if ignored.returncode == 0 and not tracked.stdout.strip():
             raise FileNotFoundError(str(root))
         result = subprocess.run(
             [
