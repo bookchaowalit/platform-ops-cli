@@ -5,12 +5,12 @@ tags: [design-system, accessibility, wcag, thai-typography, ux, design-floor]
 created: 2026-10-29
 updated: 2026-11-03
 description: "ADR-0007 Layer 0: the WCAG 2.2 AA quality floor with a fixed check method per rule (auto, keyboard script, manual), the rule IDs used by check.mjs and design-floor.json waivers, and which rules cannot be waived."
-related: [../docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md, README.md, CHANGELOG.md]
+related: [https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md, README.md, CHANGELOG.md]
 ---
 
 # Design floor 1.0.0
 
-Decision: [ADR-0007](../docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md). Conformance target: **WCAG 2.2 level AA**.
+Decision: [ADR-0007](https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md). Conformance target: **WCAG 2.2 level AA**.
 
 A green `check.mjs` run means the automated part of this floor passes. It is **not** a WCAG 2.2 AA conformance claim: the rows marked *manual* are signed off in the `ux-review` record before a release.
 

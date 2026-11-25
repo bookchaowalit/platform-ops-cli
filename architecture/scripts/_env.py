@@ -11,6 +11,7 @@ makes the guards that need it skip with a clear WARN (set
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # The tools (scripts/, tests/, design-floor/, messaging/) live in platform-ops-cli/architecture;
@@ -55,15 +56,19 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
     return repo.parent.parent / "private" / "architecture-docs"
 
 
+# A relative SOLO_*_ROOT override means "from where the command was called". Child processes that
+# run in another folder (cwd=PROJECT_ROOT) must see the same folders, so pass them on resolved.
+for _name, _value in list(os.environ.items()):
+    if _name.startswith("SOLO_") and _name.endswith("_ROOT") and _value.strip() and not os.path.isabs(os.path.expanduser(_value.strip())):
+        os.environ[_name] = str(Path(_value.strip()).expanduser().resolve())
+
 PROJECT_ROOT = architecture_root()
-if (os.environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip():
-    # A relative override means "from where the command was called"; child processes that run in
-    # another folder (cwd=PROJECT_ROOT) must get the same tree, so pass the resolved path on.
-    os.environ["SOLO_ARCHITECTURE_ROOT"] = str(PROJECT_ROOT)
 
 # A guard pointed at a folder that does not exist would check nothing and pass (0 links, an empty
 # catalog). Stop instead; only the document-free tests opt out (SOLO_ARCHITECTURE_ALLOW_MISSING=1).
-if not PROJECT_ROOT.is_dir() and os.environ.get("SOLO_ARCHITECTURE_ALLOW_MISSING") != "1":
+# Scripts that take their own root (--root / --repo-root) check that one themselves.
+_OWN_ROOT = any(arg.split("=", 1)[0] in ("--root", "--repo-root") for arg in sys.argv[1:])
+if not PROJECT_ROOT.is_dir() and not _OWN_ROOT and os.environ.get("SOLO_ARCHITECTURE_ALLOW_MISSING") != "1":
     raise SystemExit(
         f"architecture documents not found at {PROJECT_ROOT}: set SOLO_ARCHITECTURE_ROOT to an "
         "architecture-docs checkout or a store snapshot"

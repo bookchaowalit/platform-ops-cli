@@ -5,12 +5,12 @@ tags: [design-system, design-tokens, accessibility, design-floor, how-to]
 created: 2026-10-29
 updated: 2026-11-03
 description: "How an app adopts the ADR-0007 design floor: vendor tokens.css unchanged, override values in app-theme.css, add a design-floor.json, run check.mjs; how the maintainer releases a new token version, scans for drift and reports adoption."
-related: [FLOOR.md, CHANGELOG.md, ../docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md]
+related: [FLOOR.md, CHANGELOG.md, https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md]
 ---
 
 # Design floor
 
-Reference files for [ADR-0007](../docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md): a shared quality floor ([FLOOR.md](FLOOR.md)) and a shared token vocabulary that every app copies in. Each app keeps its own visual world in its `DESIGN.md`.
+Reference files for [ADR-0007](https://github.com/bookchaowalit/architecture-docs/blob/main/docs/architecture/decisions/ADR-0007-central-design-floor-and-tokens.md): a shared quality floor ([FLOOR.md](FLOOR.md)) and a shared token vocabulary that every app copies in. Each app keeps its own visual world in its `DESIGN.md`.
 
 | File | What it is |
 |---|---|

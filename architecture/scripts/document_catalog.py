@@ -136,6 +136,14 @@ def iter_candidate_paths(root: Path = ROOT) -> Iterable[Path]:
     """Yield first-party Markdown files from Git's tracked/unignored view."""
 
     try:
+        # A store snapshot has no .git: inside an ignored folder of another repository, git would
+        # answer for that repository and list nothing. Use git only at a worktree's own top level.
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if Path(top).resolve() != root.resolve():
+            raise FileNotFoundError(top)
         result = subprocess.run(
             [
                 "git",
