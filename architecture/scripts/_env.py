@@ -60,7 +60,9 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
 # run in another folder (cwd=PROJECT_ROOT) must see the same folders, so pass them on resolved.
 for _name, _value in list(os.environ.items()):
     if _name.startswith("SOLO_") and _name.endswith("_ROOT") and _value.strip() and not os.path.isabs(os.path.expanduser(_value.strip())):
-        os.environ[_name] = str(Path(_value.strip()).expanduser().resolve())
+        # Absolute but not resolved: path guards (delivery_context.ensure_path_boundary) must still
+        # see any "..", symlink or denied component the caller wrote.
+        os.environ[_name] = str(Path.cwd() / Path(_value.strip()).expanduser())
 
 PROJECT_ROOT = architecture_root()
 
