@@ -63,8 +63,23 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
     snapshot_override = (environ.get("SOLO_ARCHITECTURE_SNAPSHOT") or "").strip()
     snapshot = Path(snapshot_override).expanduser() if snapshot_override else Path.home() / ".cache" / "solo-empire" / "architecture-docs"
     if (snapshot / ".snapshot.json").is_file():
+        _warn_if_stale(snapshot)
         return snapshot.resolve()
     return private
+
+
+def _warn_if_stale(snapshot: Path, max_age_hours: float = 24) -> None:
+    """Keep working on an old snapshot, but say so on stderr (SPEC-001: stale after 24 h)."""
+    import json
+    import time
+    try:
+        pulled = float(json.loads((snapshot / ".snapshot.json").read_text(encoding="utf-8"))["pulled_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    age = (time.time() - pulled) / 3600
+    if age > max_age_hours:
+        print(f"WARN: architecture snapshot {snapshot} is {age:.0f} h old; refresh it with the hub's "
+              "knowledge_snapshot.py --space architecture-docs --refresh", file=sys.stderr)
 
 
 # A relative SOLO_*_ROOT override means "from where the command was called". Child processes that

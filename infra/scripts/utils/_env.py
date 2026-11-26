@@ -7,6 +7,7 @@ Usage in scripts:
 """
 
 import os
+import sys
 from pathlib import Path
 
 # ops-toolkit root: _env.py -> utils -> scripts -> infra -> <ops-toolkit checkout>
@@ -172,8 +173,25 @@ def architecture_root(environ=os.environ) -> Path:
     if checkout.is_dir():
         return checkout
     snapshot = architecture_snapshot(environ)
+    if not (snapshot / SNAPSHOT_STAMP).is_file():
+        return checkout
+    warn_if_stale_snapshot(snapshot)
     # Resolved: the snapshot folder is a symlink that refreshes swap atomically.
-    return snapshot.resolve() if (snapshot / SNAPSHOT_STAMP).is_file() else checkout
+    return snapshot.resolve()
+
+
+def warn_if_stale_snapshot(snapshot: Path, max_age_hours: float = 24) -> None:
+    """Readers keep working on an old snapshot but say so on stderr (SPEC-001: stale after 24 h)."""
+    import json
+    import time
+    try:
+        pulled = float(json.loads((snapshot / SNAPSHOT_STAMP).read_text(encoding="utf-8"))["pulled_at"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    age = (time.time() - pulled) / 3600
+    if age > max_age_hours:
+        print(f"WARN: architecture snapshot {snapshot} is {age:.0f} h old; refresh it with the hub's "
+              "knowledge_snapshot.py --space architecture-docs --refresh", file=sys.stderr)
 
 
 ARCHITECTURE_ROOT = architecture_root()
