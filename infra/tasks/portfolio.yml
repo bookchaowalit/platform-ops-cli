@@ -82,6 +82,11 @@ tasks:
     cmds:
       - bash infra/scripts/docpack/build_all.sh {{.CLI_ARGS}}
 
+  report:as-is-to-be:
+    desc: Build the As-Is / To-Be board from every clone's docs/diagrams/01-business-process.md (HTML + JSON in data/generated/as-is-to-be)
+    cmds:
+      - python3 infra/scripts/docpack/as_is_to_be_report.py {{.CLI_ARGS}}
+
   docpack:cards:index:
     desc: Regenerate the personal-repo Product Card verdict index
     dir: infra

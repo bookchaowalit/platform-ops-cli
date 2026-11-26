@@ -3,6 +3,8 @@
 platform-ops-cli (ชื่อเดิมใน README: `ops-toolkit`) **ไม่ใช่ service ที่ deploy** (`PRODUCT.md` §Operating Context) เป็น monorepo ของ Python scripts + owner CLI (`infra/cli.ts`) + Task adapters ที่เจ้าของและ AI agent เรียกจาก terminal และมี 3 workflows ที่รันบน GitHub Actions บน GitHub Actions ของ repo นี้เอง
 งานหลักในวันนี้แบ่งได้ 5 กลุ่ม: (1) daily workflows ที่อ่าน/เขียน cell APIs (tasks, goals, habits, diary …), (2) org hub registry sync, (3) Book Dev Linear dispatch (AI build → review → PR), (4) CI runner hosting (image + failover watchdog), (5) offline tests และ contract guards (`task check`)
 
+Last reviewed: 2026-11-26 · commit `d5dbf2e` (As-Is diagram อ่านจาก `5fdb2d9` และยังไม่ได้อ่านโค้ดใหม่ทั้งหมด [ต้องยืนยัน])
+
 ## As-Is (จากโค้ดวันนี้)
 
 ```mermaid
@@ -70,6 +72,16 @@ repo นี้ไม่มี `specs/` หรือ `docs/UPGRADE-PLAN.md` To-Be
 - `docs/operations/book-dev-linear-dispatch.md`: timer จะเริ่มส่งงานได้จริงเมื่อมี `LINEAR_API_KEY` (read-only) ใน Infisical `/linear`
 - `infra/ci-runner/README.md`: failover จะ switch จริงเมื่อเจ้าของตั้ง `RAILWAY_TOKEN` ใน environment `ci-runner-failover`
 - `docs/superpowers/specs/2026-10-14-tracker-sync.md`: tracker sync pilot เปิดใช้เมื่อ credential preflight ผ่าน
+
+## Gap
+
+| ID | As-Is → To-Be | Status | Owner | Evidence |
+|---|---|---|---|---|
+| G1 | Book Dev dispatch timer idle → sends Linear tickets to Claude build + Codex review | blocked | owner | `docs/operations/book-dev-linear-dispatch.md`; ops record: book-dev-build-review-flow (2026-11-09, key live, tickets need the `ai-dispatch` label) |
+| G2 | CI runner failover dry → switches Railway runners | decide | owner | `infra/ci-runner/README.md` needs `RAILWAY_TOKEN`; ops record: ci-hosting-policy (2026-11-10, Railway runner stopped for cost) |
+| G3 | tracker sync template → pilot on after credential preflight | blocked | owner | `docs/superpowers/specs/2026-10-14-tracker-sync.md` |
+| G4 | no strict test or quality-evidence task → `task test:strict` with skip = 0 and release evidence | todo | claude | `PRODUCT.md` §Measures |
+| G5 | PRODUCT.md "no hosted schedulers" vs 2 scheduled workflows → one agreed boundary | decide | owner | `PRODUCT.md` §Operating Context, `.github/workflows/org-hub-sync.yml` |
 
 ## Open questions
 
