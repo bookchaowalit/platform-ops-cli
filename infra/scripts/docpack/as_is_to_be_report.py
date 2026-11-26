@@ -39,6 +39,8 @@ MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.S)
 
 def find_repos(root: Path) -> list[Path]:
     """Every directory under root that holds a `.git` entry; does not descend into a repository."""
+    if (root / ".git").exists():  # a single checkout given directly as the root
+        return [root]
     repos: list[Path] = []
     for current, dirs, _files in os.walk(root):
         here = Path(current)
@@ -92,6 +94,7 @@ def parse_gaps(body: str) -> list[dict] | None:
             row = row[:-1]
         cells = [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", row)]
         if len(cells) != 5 or not re.fullmatch(r"G\d+", cells[0]):
+            gaps.append({"id": "?", "change": line.strip(), "status": "malformed", "owner": "", "evidence": ""})
             continue
         status = cells[2].lower()
         evidence = cells[4]
@@ -142,6 +145,9 @@ def parse_doc(text: str, today: dt.date) -> dict:
     reviewed = REVIEWED_RE.search(text)
     reviewed_on = reviewed.group(1) if reviewed else None
     problems = []
+    if any(g["status"] == "malformed" for g in gaps or []):
+        problems.append("Gap table has rows that do not match the five columns")
+    gaps = [g for g in gaps if g["status"] != "malformed"] if gaps is not None else None
     age = None
     if reviewed_on is not None:
         try:
@@ -196,8 +202,8 @@ def collect(root: Path, today: dt.date) -> dict:
     systems, missing = [], []
     for repo in find_repos(root):
         rel = repo.relative_to(root).parts
-        owner = rel[0] if rel else ""
-        record = {"repo": f"{owner}/{repo.name}", "path": str(repo.relative_to(root))}
+        owner = rel[0] if len(rel) > 1 else repo.parent.name
+        record = {"repo": f"{owner}/{repo.name}", "path": str(repo.relative_to(root)) if repo != root else repo.name}
         doc = repo / DOC
         # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
         chain = [repo / "docs", repo / "docs" / "diagrams", doc]
@@ -424,7 +430,7 @@ def main() -> int:
     # The report gathers private repositories' docs: keep the files owner-only.
     for name, body in (("as-is-to-be.json", json.dumps(report, ensure_ascii=False, indent=1) + "\n"), ("index.html", render_html(report))):
         target = args.out / name
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         os.fchmod(fd, 0o600)  # also tightens a file left by an older run
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(body)

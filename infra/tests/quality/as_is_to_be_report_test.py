@@ -144,6 +144,21 @@ class ParseTest(unittest.TestCase):
         text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ไม่มี To-Be ที่เขียนไว้").replace("| decide |", "| todo |")
         self.assertIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(text, TODAY)["problems"])
 
+    def test_malformed_gap_row_is_reported(self):
+        text = STANDARD.replace("| G4 | d → e | decide | owner | owner item |", "| G4 | d → e | decide | owner |")
+        doc = report.parse_doc(text, TODAY)
+        self.assertIn("Gap table has rows that do not match the five columns", doc["problems"])
+        self.assertEqual([g["id"] for g in doc["gaps"]], ["G1", "G2", "G3"])
+
+    def test_single_checkout_as_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "solo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "docs" / "diagrams").mkdir(parents=True)
+            (repo / "docs" / "diagrams" / "01-business-process.md").write_text(STANDARD, encoding="utf-8")
+            data = report.collect(repo, TODAY)
+            self.assertEqual((data["repositories"], data["with_doc"]), (1, 1))
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])
