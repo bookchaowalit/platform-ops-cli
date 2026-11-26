@@ -1040,6 +1040,13 @@ def command_import(args: argparse.Namespace) -> int:
     raw, _, _ = parse_workbook(source_path)
     projection = build_projection(source_path)
 
+    # Refuse a read-only store snapshot as either target before anything is written: the lake
+    # import below would otherwise land before the projection write is refused.
+    from _env import refuse_write_into_snapshot  # noqa: E402
+    refuse_write_into_snapshot(output_path, "free_saas_catalog")
+    if "://" not in str(args.data_lake_uri):
+        refuse_write_into_snapshot(Path(args.data_lake_uri).expanduser().resolve(), "free_saas_catalog")
+
     # Import the exact XLSX before creating the JSON projection.  This keeps
     # the workbook recoverable and gives the projection a lake lineage record.
     from data_lake.ingest import ingest_payload  # noqa: PLC0415
@@ -1070,8 +1077,6 @@ def command_import(args: argparse.Namespace) -> int:
     serialized = json.dumps(projection, ensure_ascii=False, indent=2) + "\n"
     unchanged = output_path.is_file() and output_path.read_text(encoding="utf-8") == serialized
     if not unchanged:
-        from _env import refuse_write_into_snapshot  # noqa: E402
-        refuse_write_into_snapshot(output_path, "free_saas_catalog")
         output_path.write_text(serialized, encoding="utf-8")
 
     result = {

@@ -265,6 +265,56 @@ class ArchStoreTest(unittest.TestCase):
         self.assertEqual(arch_store.pull(mine, run=Failing(), environ=self.env), 1)
         self.assertTrue(mine.is_dir())
 
+    def test_editing_the_mirror_workflow_is_not_the_cutover(self) -> None:
+        run = Recorder(pulled={"docs/a.md": "# A\n", arch_store.MIRROR: "on: push\n"})
+        copy = self.working_copy(run)
+        (copy / arch_store.MIRROR).write_text("on: workflow_dispatch\n")
+        (copy / "docs" / "a.md").write_text("# A2\n")
+        self.assertEqual(arch_store.push(copy, run=run, environ=self.env), 2)
+        self.assertEqual(run.ran("commit"), [])
+
+    def test_the_store_gets_exactly_the_frozen_set(self) -> None:
+        run = Recorder()
+        seen = {}
+        real = run.__call__
+
+        def capture(command, **kwargs):
+            if command[0] == "uv" and "commit" in command:
+                seen.update(json.loads(Path(command[command.index("--files-from") + 1]).read_text()))
+            return real(command, **kwargs)
+
+        copy = self.working_copy(run)
+        (copy / "docs" / "a.md").write_text("# A2\n")
+        self.assertEqual(arch_store.push(copy, run=capture, environ=self.env), 0)
+        import hashlib
+        self.assertEqual(seen["docs/a.md"], hashlib.sha256(b"# A2\n").hexdigest())
+        self.assertEqual(sorted(seen), ["docs/a.md", "docs/b.md"])
+
+    def test_a_numbered_or_bold_p1_still_blocks(self) -> None:
+        run = Recorder(review="1. **[P1]** docs/x.md: wrong\n- [P3] docs/y.md: nit")
+        copy = self.working_copy(run)
+        for i in range(6):
+            (copy / "docs" / f"n{i}.md").write_text("n\n")
+        self.assertEqual(arch_store.push(copy, run=run, environ=self.env), 1)
+        self.assertEqual(run.ran("commit"), [])
+
+    def test_the_reviewer_runs_without_user_config_or_tools(self) -> None:
+        run = Recorder()
+        copy = self.working_copy(run)
+        for i in range(6):
+            (copy / "docs" / f"n{i}.md").write_text("n\n")
+        arch_store.push(copy, run=run, environ=self.env)
+        codex = run.ran("codex")[0]
+        for flag in ("--ignore-user-config", "--ignore-rules", 'web_search="disabled"', "plugins"):
+            self.assertIn(flag, codex)
+
+    def test_a_second_pull_into_the_same_folder_waits_its_turn(self) -> None:
+        target = self.base / "busy-pull"
+        lock = self.base / ".busy-pull.arch-pull.lock"
+        lock.write_text("")
+        self.assertEqual(arch_store.pull(target, run=Recorder(), environ=self.env), 2)
+        self.assertTrue(lock.exists())  # the other pull's lock is left alone
+
     def test_push_needs_a_working_copy(self) -> None:
         plain = self.base / "plain"
         plain.mkdir()
