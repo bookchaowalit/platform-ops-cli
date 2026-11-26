@@ -61,25 +61,39 @@ def first_mermaid(body: str) -> str | None:
     return match.group(1).rstrip() if match else None
 
 
-def parse_gaps(body: str) -> list[dict]:
-    gaps = []
+GAP_HEADER = ["id", "as-is → to-be", "status", "owner", "evidence"]
+
+
+def parse_gaps(body: str) -> list[dict] | None:
+    """Rows of the first table whose header is the contract's; None when no such table."""
+    gaps: list[dict] = []
+    in_table = False
     for line in body.splitlines():
+        if not line.strip().startswith("|"):
+            if in_table:
+                break
+            continue
+        if not in_table:
+            head = [c.strip().lower() for c in line.strip().strip("|").split("|")]
+            if head == GAP_HEADER:
+                in_table = True
+            continue
         row = line.strip()
         if row.startswith("|"):
             row = row[1:]
         if row.endswith("|") and not row.endswith("\\|"):
             row = row[:-1]
         cells = [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", row)]
-        if len(cells) < 5 or not re.fullmatch(r"G\d+", cells[0]):
+        if len(cells) != 5 or not re.fullmatch(r"G\d+", cells[0]):
             continue
         status = cells[2].lower()
         evidence = cells[4]
         if status not in STATUSES:
-            status = "todo"
+            status = "todo"  # an unknown status never counts as progress
         if status == "done" and not evidence:
             status = "todo"
         gaps.append({"id": cells[0], "change": cells[1], "status": status, "owner": cells[3], "evidence": evidence})
-    return gaps
+    return gaps if in_table else None
 
 
 def intro(text: str) -> str:
@@ -149,7 +163,10 @@ def parse_doc(text: str, today: dt.date) -> dict:
         problems.append("no Gap table")
     elif not gaps:
         problems.append("Gap table has no rows")
-    counts = {s: sum(1 for g in gaps or [] if g["status"] == s) for s in STATUSES}
+    if to_be is None and not any(g["status"] == "decide" for g in gaps or []):
+        problems.append("no To-Be and no decide gap asking the owner for one")
+    real_gaps = [g for g in gaps or [] if g["id"] != "G0"]  # G0 = "no gap" marker row
+    counts = {s: sum(1 for g in real_gaps if g["status"] == s) for s in STATUSES}
     return {
         "summary": intro(text),
         "reviewed_on": reviewed_on,
@@ -172,9 +189,15 @@ def collect(root: Path, today: dt.date) -> dict:
         owner = rel[0] if rel else ""
         record = {"repo": f"{owner}/{repo.name}", "path": str(repo.relative_to(root))}
         doc = repo / DOC
-        # Only a regular file inside the clone; a symlink pointing elsewhere is never read.
-        if doc.is_file() and doc.resolve().is_relative_to(repo.resolve()):
-            systems.append({**record, **parse_doc(doc.read_text(encoding="utf-8", errors="replace"), today)})
+        # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
+        chain = [repo / "docs", repo / "docs" / "diagrams", doc]
+        if doc.is_file() and not any(p.is_symlink() for p in chain) and doc.resolve().is_relative_to(repo.resolve()):
+            try:
+                text = doc.read_text(encoding="utf-8", errors="replace")
+            except OSError as error:
+                systems.append({**record, **parse_doc("", today), "problems": [f"unreadable: {error.strerror}"], "standard": False})
+                continue
+            systems.append({**record, **parse_doc(text, today)})
         else:
             missing.append(record["repo"])
     systems.sort(key=lambda s: (not s["standard"], s["repo"]))
@@ -207,10 +230,11 @@ def code_spans(value: str) -> str:
     return re.sub(r"`([^`]+)`", r"<code>\1</code>", e(value))
 
 
-def bar(counts: dict) -> str:
+def bar(counts: dict, has_rows: bool = False) -> str:
     total = sum(counts.values())
     if not total:
-        return '<div class="bar empty"><span>ยังไม่มีตาราง Gap</span></div>'
+        label = "ไม่มี Gap (As-Is ตรงกับ To-Be)" if has_rows else "ยังไม่มีตาราง Gap"
+        return f'<div class="bar empty"><span>{label}</span></div>'
     segs = "".join(
         f'<i class="s-{s}" style="flex:{counts[s]}" title="{STATUS_TH[s]} {counts[s]}"></i>' for s in STATUSES if counts[s]
     )
@@ -252,7 +276,7 @@ def render_system(s: dict) -> str:
   <summary>
     <div class="sh"><h2>{e(s["repo"].split("/")[-1])}</h2><span class="owner mono">{e(s["repo"])}</span></div>
     <div class="meta">{fresh}{std}<span class="done mono">{done}</span></div>
-    {bar(counts)}
+    {bar(counts, bool(s["gaps"]))}
   </summary>
   <p class="intro">{code_spans(s["summary"])}</p>
   {f'<ul class="probs">{problems}</ul>' if problems else ''}
@@ -386,8 +410,11 @@ def main() -> int:
         parser.error(f"root not found: {args.root} (set SOLO_BOOK_DEV_GITHUB_ROOT or --root)")
     report = collect(args.root, args.today)
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "as-is-to-be.json").write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    (args.out / "index.html").write_text(render_html(report), encoding="utf-8")
+    # The report gathers private repositories' docs: keep the files owner-only.
+    for name, body in (("as-is-to-be.json", json.dumps(report, ensure_ascii=False, indent=1) + "\n"), ("index.html", render_html(report))):
+        target = args.out / name
+        target.write_text(body, encoding="utf-8")
+        target.chmod(0o600)
     t = report["gap_totals"]
     print(f"{report['standard']}/{report['with_doc']} standard, {report['with_doc']}/{report['repositories']} with doc, "
           f"gaps done {t['done']}/{sum(t.values())} -> {args.out}")

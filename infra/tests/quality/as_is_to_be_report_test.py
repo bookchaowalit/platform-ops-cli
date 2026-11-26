@@ -125,6 +125,25 @@ class ParseTest(unittest.TestCase):
         self.assertIn("no To-Be section", doc["problems"])
         self.assertIn("Gap table has no rows", doc["problems"])
 
+    def test_gap_rows_only_from_the_contract_table(self):
+        other = "\n| G9 | not a gap | done | x | y |\n"
+        text = STANDARD.replace("## Gap\n", "## Gap\n" + other + "\n", 1)
+        ids = [g["id"] for g in report.parse_doc(text, TODAY)["gaps"]]
+        self.assertEqual(ids, ["G1", "G2", "G3", "G4"])
+        no_header = STANDARD.replace("| ID | As-Is → To-Be | Status | Owner | Evidence |\n|---|---|---|---|---|\n", "")
+        self.assertIn("no Gap table", report.parse_doc(no_header, TODAY)["problems"])
+
+    def test_g0_marks_no_gap(self):
+        table = "| ID | As-Is → To-Be | Status | Owner | Evidence |\n|---|---|---|---|---|\n"
+        text = STANDARD.split("## Gap")[0] + "## Gap\n\n" + table + "| G0 | ไม่มี gap | done | owner | spec |\n"
+        doc = report.parse_doc(text, TODAY)
+        self.assertTrue(doc["standard"], doc["problems"])
+        self.assertEqual(sum(doc["gap_counts"].values()), 0)
+
+    def test_no_to_be_needs_a_decide_gap(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ไม่มี To-Be ที่เขียนไว้").replace("| decide |", "| todo |")
+        self.assertIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(text, TODAY)["problems"])
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])
@@ -148,11 +167,17 @@ class CollectTest(unittest.TestCase):
             (linked / ".git").mkdir(parents=True)
             (linked / "docs" / "diagrams").mkdir(parents=True)
             (linked / "docs" / "diagrams" / "01-business-process.md").symlink_to(outside)
+            # A symlinked folder on the way down is refused too, even if it stays inside the clone.
+            hop = root / "owner" / "public" / "epsilon"
+            (hop / ".git").mkdir(parents=True)
+            (hop / "real" / "diagrams").mkdir(parents=True)
+            (hop / "real" / "diagrams" / "01-business-process.md").write_text(STANDARD, encoding="utf-8")
+            (hop / "docs").symlink_to(hop / "real")
             data = report.collect(root, TODAY)
-            self.assertEqual(data["repositories"], 4)
+            self.assertEqual(data["repositories"], 5)
             self.assertEqual(data["with_doc"], 2)
             self.assertEqual(data["standard"], 1)
-            self.assertEqual(data["missing"], ["owner/delta", "owner/gamma"])  # symlink out of the clone is not read
+            self.assertEqual(data["missing"], ["owner/delta", "owner/epsilon", "owner/gamma"])  # symlinks are not followed
             self.assertEqual(data["systems"][0]["repo"], "owner/alpha")
             self.assertEqual(data["gap_totals"]["done"], 1)
             self.assertEqual(data["waiting_owner"], 1)  # G4 decide; G3 todo does not count

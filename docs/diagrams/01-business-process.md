@@ -77,7 +77,7 @@ repo นี้ไม่มี `specs/` หรือ `docs/UPGRADE-PLAN.md` To-Be
 
 | ID | As-Is → To-Be | Status | Owner | Evidence |
 |---|---|---|---|---|
-| G1 | Book Dev dispatch timer idle → sends Linear tickets to Claude build + Codex review | blocked | owner | `docs/operations/book-dev-linear-dispatch.md`; ops record: book-dev-build-review-flow (2026-11-09, key live, tickets need the `ai-dispatch` label) |
+| G1 | Book Dev dispatch timer idle → sends Linear tickets to the configured builder (Codex on the owner machine since 2026-11-09) + Codex review | blocked | owner | `docs/operations/book-dev-linear-dispatch.md`; ops record: book-dev-build-review-flow (2026-11-09, key live, tickets need the `ai-dispatch` label) |
 | G2 | CI runner failover dry → switches Railway runners | decide | owner | `infra/ci-runner/README.md` needs `RAILWAY_TOKEN`; ops record: ci-hosting-policy (2026-11-10, Railway runner stopped for cost) |
 | G3 | tracker sync template → pilot on after credential preflight | blocked | owner | `docs/superpowers/specs/2026-10-14-tracker-sync.md` |
 | G4 | no strict test or quality-evidence task → `task test:strict` with skip = 0 and release evidence | todo | claude | `PRODUCT.md` §Measures |
