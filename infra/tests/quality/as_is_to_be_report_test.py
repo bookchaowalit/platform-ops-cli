@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Tests for the cross-repository As-Is / To-Be report."""
+
+from __future__ import annotations
+
+import datetime as dt
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "docpack"))
+
+import as_is_to_be_report as report  # noqa: E402
+
+TODAY = dt.date(2026, 11, 26)
+
+STANDARD = """# 01 — Business process (As-Is / To-Be)
+
+Service ตัวอย่าง
+
+Last reviewed: 2026-11-20 · commit `abc1234`
+
+## As-Is (จากโค้ดวันนี้)
+
+```mermaid
+flowchart LR
+  A["<b>today</b>"] --> B
+```
+
+### As-Is: sub process
+
+```mermaid
+flowchart TD
+  X --> Y
+```
+
+## To-Be (จาก spec)
+
+```mermaid
+flowchart LR
+  A --> C
+```
+
+## Gap
+
+| ID | As-Is → To-Be | Status | Owner | Evidence |
+|---|---|---|---|---|
+| G1 | a → b | done | claude | `specs/001/spec.md` |
+| G2 | b → c | Done | claude |  |
+| G3 | c → d | waiting | owner | x |
+| G4 | d → e | decide | owner | owner item |
+"""
+
+LEGACY = """# 01 — Business process (As-Is / To-Be)
+
+old style
+
+## As-Is
+
+```mermaid
+flowchart LR
+  A --> B
+```
+
+## To-Be
+
+ไม่มี To-Be ที่เขียนไว้
+"""
+
+
+class ParseTest(unittest.TestCase):
+    def test_standard_file(self):
+        doc = report.parse_doc(STANDARD, TODAY)
+        self.assertTrue(doc["standard"], doc["problems"])
+        self.assertEqual(doc["reviewed_on"], "2026-11-20")
+        self.assertEqual(doc["reviewed_commit"], "abc1234")
+        self.assertEqual(doc["summary"], "Service ตัวอย่าง")
+        self.assertIn("<b>today</b>", doc["as_is"])
+        self.assertNotIn("X --> Y", doc["as_is"])  # first block only
+        self.assertIn("A --> C", doc["to_be"])
+
+    def test_gap_status_rules(self):
+        gaps = {g["id"]: g["status"] for g in report.parse_doc(STANDARD, TODAY)["gaps"]}
+        self.assertEqual(gaps, {"G1": "done", "G2": "todo", "G3": "todo", "G4": "decide"})
+
+    def test_legacy_file_is_not_standard(self):
+        doc = report.parse_doc(LEGACY, TODAY)
+        self.assertFalse(doc["standard"])
+        self.assertIn("no Gap table", doc["problems"])
+        self.assertIn("no Last reviewed line", doc["problems"])
+        self.assertIsNone(doc["to_be"])
+
+    def test_escaped_pipe_keeps_columns(self):
+        text = STANDARD.replace("| G4 | d → e |", "| G4 | d \\| x → e |")
+        gap = report.parse_doc(text, TODAY)["gaps"][3]
+        self.assertEqual((gap["change"], gap["status"], gap["owner"]), ("d | x → e", "decide", "owner"))
+
+    def test_invalid_date_is_a_problem_not_a_crash(self):
+        doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-13-45"), TODAY)
+        self.assertFalse(doc["standard"])
+        self.assertIn("invalid Last reviewed date 2026-13-45", doc["problems"])
+
+    def test_text_to_be_is_kept(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ไม่มี To-Be ที่เขียนไว้ รอ owner")
+        doc = report.parse_doc(text, TODAY)
+        self.assertIsNone(doc["to_be"])
+        self.assertEqual(doc["to_be_note"], "ไม่มี To-Be ที่เขียนไว้ รอ owner")
+        self.assertTrue(doc["standard"], doc["problems"])
+
+    def test_text_to_be_keeps_its_list(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "เป้าหมายมีเพียง:\n\n- ข้อหนึ่ง\n- ข้อสอง")
+        self.assertEqual(report.parse_doc(text, TODAY)["to_be_note"], "เป้าหมายมีเพียง:\n\n- ข้อหนึ่ง\n- ข้อสอง")
+
+    def test_review_line_needs_commit_and_no_unverified_marker(self):
+        no_commit = report.parse_doc(STANDARD.replace(" · commit `abc1234`", ""), TODAY)
+        self.assertIn("Last reviewed line has no commit", no_commit["problems"])
+        unverified = report.parse_doc(STANDARD.replace("commit `abc1234`", "commit `abc1234` [ต้องยืนยัน]"), TODAY)
+        self.assertFalse(unverified["standard"])
+
+    def test_missing_to_be_and_empty_gap(self):
+        text = STANDARD.split("## To-Be")[0] + "## Gap\n\n| ID | As-Is → To-Be | Status | Owner | Evidence |\n|---|---|---|---|---|\n"
+        doc = report.parse_doc(text, TODAY)
+        self.assertIn("no To-Be section", doc["problems"])
+        self.assertIn("Gap table has no rows", doc["problems"])
+
+    def test_stale_file(self):
+        doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
+        self.assertFalse(doc["standard"])
+        self.assertTrue(any(p.startswith("stale") for p in doc["problems"]))
+
+
+class CollectTest(unittest.TestCase):
+    def test_collect_and_render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, text in (("alpha", STANDARD), ("beta", LEGACY), ("gamma", None)):
+                repo = root / "owner" / "public" / name
+                (repo / ".git").mkdir(parents=True)
+                if text:
+                    (repo / "docs" / "diagrams").mkdir(parents=True)
+                    (repo / "docs" / "diagrams" / "01-business-process.md").write_text(text, encoding="utf-8")
+                (repo / "node_modules" / "x" / ".git").mkdir(parents=True)  # never counted
+            outside = root / "secret.md"
+            outside.write_text(STANDARD, encoding="utf-8")
+            linked = root / "owner" / "public" / "delta"
+            (linked / ".git").mkdir(parents=True)
+            (linked / "docs" / "diagrams").mkdir(parents=True)
+            (linked / "docs" / "diagrams" / "01-business-process.md").symlink_to(outside)
+            data = report.collect(root, TODAY)
+            self.assertEqual(data["repositories"], 4)
+            self.assertEqual(data["with_doc"], 2)
+            self.assertEqual(data["standard"], 1)
+            self.assertEqual(data["missing"], ["owner/delta", "owner/gamma"])  # symlink out of the clone is not read
+            self.assertEqual(data["systems"][0]["repo"], "owner/alpha")
+            self.assertEqual(data["gap_totals"]["done"], 1)
+            self.assertEqual(data["waiting_owner"], 1)  # G4 decide; G3 todo does not count
+            page = report.render_html(data)
+            self.assertTrue(page.startswith('<meta charset="utf-8">'))
+            self.assertIn("<title>As-Is To-Be Board</title>", page[:8192])
+            self.assertIn("mermaid.run", page)  # fallback renderer when the viewer does not draw diagrams
+            self.assertIn('<pre class="mermaid">', page)
+            self.assertIn("&lt;b&gt;today&lt;/b&gt;", page)  # diagram text is escaped
+            self.assertNotIn("<b>today</b>", page)
+
+
+if __name__ == "__main__":
+    unittest.main()
