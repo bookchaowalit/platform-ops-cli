@@ -710,6 +710,8 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         elif args.json:
             print(json.dumps(standard, ensure_ascii=False, indent=2, allow_nan=False))
         elif args.write:
+            from _env import refuse_snapshot_write  # noqa: E402
+            refuse_snapshot_write("delivery_document_pack", root)
             destination = safe_local(root, str(MATRIX), exists=False)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(render_matrix(standard, root), encoding="utf-8")

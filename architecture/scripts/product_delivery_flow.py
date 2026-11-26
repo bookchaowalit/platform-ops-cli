@@ -500,6 +500,8 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         elif args.markdown:
             print(render_markdown(data, root, args.role), end="")
         elif args.write:
+            from _env import refuse_snapshot_write  # noqa: E402
+            refuse_snapshot_write("product_delivery_flow", root)
             target = root / GENERATED
             # The only write target is the canonical repository-local generated document.
             if not target.parent.resolve().is_relative_to(root.resolve()) or target.is_symlink():

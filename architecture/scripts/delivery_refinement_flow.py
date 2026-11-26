@@ -286,6 +286,8 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         elif args.markdown:
             print(render_markdown(data, root, args.role), end="")
         elif args.write:
+            from _env import refuse_snapshot_write  # noqa: E402
+            refuse_snapshot_write("delivery_refinement_flow", root)
             target = safe_local(root, str(GENERATED), exists=False)
             if not target.parent.is_dir():
                 raise PackError("generated_parent_missing")
