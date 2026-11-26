@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 
 SCHEMA_VERSION = "solo-empire.free-quota.v1"
-# The free-resource catalog lives in architecture-docs (SOLO_ARCHITECTURE_ROOT, default ../architecture-docs).
-ARCHITECTURE_ROOT = Path(os.environ.get("SOLO_ARCHITECTURE_ROOT") or Path(__file__).resolve().parents[3].parent / "architecture-docs")
+# The free-resource catalog lives in the architecture documents (checkout, else the store snapshot).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
+from _env import ARCHITECTURE_ROOT  # noqa: E402
 CATALOG_PATH = ARCHITECTURE_ROOT / "systems" / "cloud-platform" / "free-resource-index.json"
 FREE_ACCESS_MODELS = {"free-forever", "free-quota"}
 

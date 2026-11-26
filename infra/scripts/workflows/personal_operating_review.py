@@ -291,6 +291,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _open_architecture_store(**kwargs: Any):  # pragma: no cover - thin wrapper over the client
+    from knowledge_store import KnowledgeStore, settings
+
+    configured = settings()
+    return KnowledgeStore(*configured, space=kwargs.get("space", "architecture-docs")) if configured else None
+
+
+def write_review(relative: str, report: str, *, root: Path = ARCHITECTURE_ROOT,
+                 open_store: Any = _open_architecture_store) -> str:
+    """Write the review where the architecture documents are owned (SPEC-001 phase 2).
+
+    A Git checkout is the source until the phase 3 cutover: the file goes there and the
+    store-mirror workflow copies it into the store. Any other root is a read-only store snapshot,
+    so the review goes to store space architecture-docs (if_version guards concurrent edits) and
+    never into the snapshot folder, which the next refresh would replace.
+    """
+    if (root / ".git").exists():
+        output = root / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(report, encoding="utf-8")
+        return str(output)
+    store = open_store(space="architecture-docs")
+    if store is None:
+        raise SystemExit("architecture documents are a store snapshot and the knowledge store is not configured "
+                         "(EMPIRE_KNOWLEDGE_API, SOLO_WEB_PUBLIC_ORIGIN); pass --output to write a local file")
+    current = store.get(relative)
+    version = store.put(relative, report.encode("utf-8"), if_version=current[1] if current else 0)
+    return f"store architecture-docs:{relative} (version {version})"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cycle = select_cycle(args.cycle)
@@ -302,10 +332,14 @@ def main(argv: list[str] | None = None) -> int:
 
     report = markdown_report(snapshot)
     if args.write:
-        output = args.output or (DEFAULT_OUTPUT_DIR / f"PERSONAL-OPERATING-REVIEW-{snapshot['cycle']['slug'] if snapshot['cycle'] else start.isoformat()}.md")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(report, encoding="utf-8")
-        print(f"✅ Personal operating review written: {output}")
+        name = f"PERSONAL-OPERATING-REVIEW-{snapshot['cycle']['slug'] if snapshot['cycle'] else start.isoformat()}.md"
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(report, encoding="utf-8")
+            target = str(args.output)
+        else:
+            target = write_review(f"operations/evidence/{name}", report)
+        print(f"✅ Personal operating review written: {target}")
 
     if args.json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str))

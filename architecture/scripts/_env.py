@@ -41,19 +41,30 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
     Order: SOLO_ARCHITECTURE_ROOT (a store snapshot or a checkout) -> the tools folder itself when
     it still sits inside the document tree (legacy layout, docs/ next to scripts/) -> the
     architecture-docs sibling of the platform-ops-cli clone (``../architecture-docs``) -> the
-    empire clone folder, where ops-cli is under public/ and the documents under private/. A linked
-    worktree resolves from its main clone, so it finds the same documents.
+    empire clone folder, where ops-cli is under public/ and the documents under private/ -> the local
+    store snapshot (SOLO_ARCHITECTURE_SNAPSHOT, default ~/.cache/solo-empire/architecture-docs, known
+    by its .snapshot.json stamp; SPEC-001 phase 2). A linked worktree resolves from its main clone.
     """
     override = (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        # Absolute but not resolved: path guards (delivery_context.ensure_path_boundary) must
+        # still see any "..", symlink or denied component of the override.
+        return Path.cwd() / Path(override).expanduser()
     if (tools_root / "docs").is_dir():
         return tools_root
     repo = main_checkout(tools_root.parent)
     sibling = repo.parent / "architecture-docs"
     if sibling.is_dir():
         return sibling
-    return repo.parent.parent / "private" / "architecture-docs"
+    private = repo.parent.parent / "private" / "architecture-docs"
+    if private.is_dir():
+        return private
+    # Store snapshot (SPEC-001 phase 2), resolved: refreshes swap the folder symlink atomically.
+    snapshot_override = (environ.get("SOLO_ARCHITECTURE_SNAPSHOT") or "").strip()
+    snapshot = Path(snapshot_override).expanduser() if snapshot_override else Path.home() / ".cache" / "solo-empire" / "architecture-docs"
+    if (snapshot / ".snapshot.json").is_file():
+        return snapshot.resolve()
+    return private
 
 
 # A relative SOLO_*_ROOT override means "from where the command was called". Child processes that

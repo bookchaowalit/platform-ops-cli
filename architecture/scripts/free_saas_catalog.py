@@ -1013,8 +1013,10 @@ def _source_path(value: str) -> Path:
     path = Path(value).expanduser()
     if path.is_absolute():
         return path.resolve()
-    repository_path = PROJECT_ROOT / path
-    return (repository_path if repository_path.exists() else path).resolve()
+    # Relative to the caller's folder first (tooling tasks run there), then the document tree.
+    if path.exists():
+        return path.resolve()
+    return (PROJECT_ROOT / path).resolve()
 
 
 def command_import(args: argparse.Namespace) -> int:
