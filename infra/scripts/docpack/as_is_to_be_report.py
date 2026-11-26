@@ -91,12 +91,16 @@ def intro(text: str) -> str:
     return ""
 
 
-def first_paragraph(body: str) -> str:
-    for para in re.split(r"\n\s*\n", body):
-        para = para.strip()
-        if para and not para.startswith(("```", "Sources:", "#")):
-            return " ".join(para.split())
-    return ""
+def section_text(body: str) -> str:
+    """The section's prose and list items (no code blocks, no Sources line), line breaks kept."""
+    body = re.sub(r"```.*?```", "", body, flags=re.S)
+    keep = []
+    for line in body.splitlines():
+        line = line.rstrip()
+        if line.startswith(("Sources:", "#")):
+            continue
+        keep.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
 
 
 def parse_doc(text: str, today: dt.date) -> dict:
@@ -111,7 +115,7 @@ def parse_doc(text: str, today: dt.date) -> dict:
         elif low.startswith("to-be") and not seen_to_be:
             seen_to_be, to_be = True, first_mermaid(body)
             if to_be is None:
-                to_be_note = first_paragraph(body)
+                to_be_note = section_text(body)
         elif low == "gap" and gaps is None:
             gaps = parse_gaps(body)
     reviewed = REVIEWED_RE.search(text)
@@ -126,6 +130,11 @@ def parse_doc(text: str, today: dt.date) -> dict:
             reviewed_on = None
     elif not problems:  # no line at all (an invalid date was reported above)
         problems.append("no Last reviewed line")
+    if reviewed is not None and reviewed_on is not None and not reviewed.group(2):
+        problems.append("Last reviewed line has no commit")
+    review_line = text[reviewed.start():text.find("\n", reviewed.start())] if reviewed else ""
+    if "[ต้องยืนยัน]" in review_line:
+        problems.append("As-Is not checked against the latest code ([ต้องยืนยัน] on the Last reviewed line)")
     if age is not None and age > STALE_DAYS:
         problems.append(f"stale: reviewed {age} days ago")
     if not intro(text):
@@ -170,6 +179,10 @@ def collect(root: Path, today: dt.date) -> dict:
             missing.append(record["repo"])
     systems.sort(key=lambda s: (not s["standard"], s["repo"]))
     totals = {s: sum(x["gap_counts"][s] for x in systems) for s in STATUSES}
+    waiting_owner = sum(
+        1 for x in systems for g in x["gaps"]
+        if g["status"] == "decide" or (g["status"] == "blocked" and g["owner"].lower() == "owner")
+    )
     return {
         "generated_on": today.isoformat(),
         "stale_after_days": STALE_DAYS,
@@ -177,6 +190,7 @@ def collect(root: Path, today: dt.date) -> dict:
         "with_doc": len(systems),
         "standard": sum(1 for s in systems if s["standard"]),
         "gap_totals": totals,
+        "waiting_owner": waiting_owner,
         "systems": systems,
         "missing": sorted(missing),
     }
@@ -253,12 +267,12 @@ def render_system(s: dict) -> str:
 
 CSS = """
 :root{--bg:#f4f6f9;--panel:#ffffff;--fg:#17202b;--muted:#5b6675;--line:#d9dee6;--accent:#2f5bd3;
---done:#2e8b57;--doing:#2f5bd3;--todo:#9aa4b2;--blocked:#c8463d;--decide:#c58a12;
+--done:#26774b;--chip-fg:#ffffff;--doing:#2f5bd3;--todo:#9aa4b2;--blocked:#c8463d;--decide:#c58a12;
 --sans:"IBM Plex Sans Thai","Noto Sans Thai",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#11161d;--panel:#18202a;--fg:#e6ebf2;--muted:#9aa6b6;--line:#2a3442;--accent:#7f9ef0;
---done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;color-scheme:dark}}
+--done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;--chip-fg:#10151c;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#11161d;--panel:#18202a;--fg:#e6ebf2;--muted:#9aa6b6;--line:#2a3442;--accent:#7f9ef0;
---done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;color-scheme:dark}
+--done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;--chip-fg:#10151c;color-scheme:dark}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.6}
 .wrap{max-width:1240px;margin:0 auto;padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:18px}
 header{display:grid;gap:6px}
@@ -271,8 +285,9 @@ code{background:color-mix(in srgb,var(--accent) 9%,transparent);padding:0 .3em;b
 .legend{display:flex;flex-wrap:wrap;gap:8px}
 .bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--line);gap:2px}
 .bar i{display:block}.bar.empty{height:auto;background:none;color:var(--muted);font-size:.8rem}
+.chip.s-todo,.chip.s-decide{color:#16202b}
 .s-done{background:var(--done)}.s-doing{background:var(--doing)}.s-todo{background:var(--todo)}.s-blocked{background:var(--blocked)}.s-decide{background:var(--decide)}
-.chip{display:inline-block;color:#fff;font-size:.78rem;padding:1px 8px;border-radius:999px;white-space:nowrap}
+.chip{display:inline-block;color:var(--chip-fg);font-weight:500;font-size:.78rem;padding:1px 8px;border-radius:999px;white-space:nowrap}
 .sys{background:var(--panel);border:1px solid var(--line);border-radius:10px}
 .sys>summary{list-style:none;cursor:pointer;padding:14px 18px;display:grid;gap:8px}
 .sys>summary::-webkit-details-marker{display:none}
@@ -291,7 +306,7 @@ h2{font-size:1.15rem;margin:0}.owner{color:var(--muted)}
 .pair section{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 h3{margin:0 0 6px;font-size:.95rem;letter-spacing:.02em}h3 small{color:var(--muted);font-weight:400;margin-left:6px}
 .dia{overflow-x:auto}.dia pre{margin:0;background:none}
-.none{color:var(--muted);font-style:italic}.note{color:var(--muted);max-width:70ch}
+.none{color:var(--muted);font-style:italic}.note{color:var(--muted);max-width:70ch;white-space:pre-line}
 .tw{overflow-x:auto;margin-top:14px}
 table{border-collapse:collapse;width:100%;font-size:.88rem}
 th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -314,6 +329,9 @@ setTimeout(function () {
   if (!left.length) return;
   var tag = document.createElement("script");
   tag.src = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js";
+  tag.integrity = "sha512-6a80OTZVmEJhqYJUmYd5z8yHUCDlYnj6q9XwB/gKOEyNQV/Q8u+XeSG59a2ZKFEHGTYzgfOQKYEBtrZV7vBr+Q==";
+  tag.crossOrigin = "anonymous";
+  tag.referrerPolicy = "no-referrer";
   tag.onload = function () {
     var dark = matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.dataset.theme !== "light"
       || document.documentElement.dataset.theme === "dark";
@@ -348,7 +366,7 @@ def render_html(report: dict) -> str:
   <div class="kpi"><b>{report["with_doc"]}</b><span>มีไฟล์ As-Is/To-Be</span></div>
   <div class="kpi"><b>{report["repositories"]}</b><span>repo ทั้งหมด</span></div>
   <div class="kpi"><b>{t["done"]}/{total}</b><span>Gap เสร็จแล้ว</span></div>
-  <div class="kpi"><b>{t["decide"] + t["blocked"]}</b><span>รอ owner (ตัดสินใจหรือติดขัด)</span></div>
+  <div class="kpi"><b>{report["waiting_owner"]}</b><span>รอ owner (decide หรือ blocked ที่ owner ถือ)</span></div>
 </div>
 <div class="legend">{legend}</div>
 {systems}

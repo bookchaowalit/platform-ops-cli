@@ -109,6 +109,16 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(doc["to_be_note"], "ไม่มี To-Be ที่เขียนไว้ รอ owner")
         self.assertTrue(doc["standard"], doc["problems"])
 
+    def test_text_to_be_keeps_its_list(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "เป้าหมายมีเพียง:\n\n- ข้อหนึ่ง\n- ข้อสอง")
+        self.assertEqual(report.parse_doc(text, TODAY)["to_be_note"], "เป้าหมายมีเพียง:\n\n- ข้อหนึ่ง\n- ข้อสอง")
+
+    def test_review_line_needs_commit_and_no_unverified_marker(self):
+        no_commit = report.parse_doc(STANDARD.replace(" · commit `abc1234`", ""), TODAY)
+        self.assertIn("Last reviewed line has no commit", no_commit["problems"])
+        unverified = report.parse_doc(STANDARD.replace("commit `abc1234`", "commit `abc1234` [ต้องยืนยัน]"), TODAY)
+        self.assertFalse(unverified["standard"])
+
     def test_missing_to_be_and_empty_gap(self):
         text = STANDARD.split("## To-Be")[0] + "## Gap\n\n| ID | As-Is → To-Be | Status | Owner | Evidence |\n|---|---|---|---|---|\n"
         doc = report.parse_doc(text, TODAY)
@@ -145,6 +155,7 @@ class CollectTest(unittest.TestCase):
             self.assertEqual(data["missing"], ["owner/delta", "owner/gamma"])  # symlink out of the clone is not read
             self.assertEqual(data["systems"][0]["repo"], "owner/alpha")
             self.assertEqual(data["gap_totals"]["done"], 1)
+            self.assertEqual(data["waiting_owner"], 1)  # G4 decide; G3 todo does not count
             page = report.render_html(data)
             self.assertTrue(page.startswith('<meta charset="utf-8">'))
             self.assertIn("<title>As-Is To-Be Board</title>", page[:8192])

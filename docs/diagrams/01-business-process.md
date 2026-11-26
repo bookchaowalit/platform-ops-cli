@@ -81,9 +81,7 @@ repo นี้ไม่มี `specs/` หรือ `docs/UPGRADE-PLAN.md` To-Be
 | G2 | CI runner failover dry → switches Railway runners | decide | owner | `infra/ci-runner/README.md` needs `RAILWAY_TOKEN`; ops record: ci-hosting-policy (2026-11-10, Railway runner stopped for cost) |
 | G3 | tracker sync template → pilot on after credential preflight | blocked | owner | `docs/superpowers/specs/2026-10-14-tracker-sync.md` |
 | G4 | no strict test or quality-evidence task → `task test:strict` with skip = 0 and release evidence | todo | claude | `PRODUCT.md` §Measures |
-| G5 | PRODUCT.md "no hosted schedulers" vs 2 scheduled workflows → one agreed boundary | decide | owner | `PRODUCT.md` §Operating Context, `.github/workflows/org-hub-sync.yml` |
 
 ## Open questions
 
-- PRODUCT.md บอก "Out of scope: hosted schedulers" แต่ repo มี scheduled workflows 2 ตัว (org hub sync, CI runner failover): ควรแก้ PRODUCT.md หรือย้ายงาน
 - To-Be ระดับ product (เช่น จะย้าย daily workflows ขึ้น hosted หรือไม่) ไม่มีในเอกสาร repo
