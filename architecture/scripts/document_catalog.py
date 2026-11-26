@@ -136,18 +136,13 @@ def iter_candidate_paths(root: Path = ROOT) -> Iterable[Path]:
     """Yield first-party Markdown files from Git's tracked/unignored view."""
 
     try:
-        # A store snapshot has no .git. Inside another repository's ignored folder git would answer
-        # for that repository and list nothing, so walk the disk there. Anywhere git tracks files
-        # (a checkout, a subfolder of one, even an ignored folder with tracked files) keep git's
-        # tracked/unignored view, so files git ignores stay out.
+        # A store snapshot (known by its .snapshot.json stamp, SPEC-001) has no .git: inside
+        # another repository git would answer for that repository, so walk the disk. Everywhere
+        # else keep git's tracked/unignored view, so files git ignores stay out.
+        if (root / ".snapshot.json").is_file():
+            raise FileNotFoundError(str(root))
         subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
                        capture_output=True, text=True, check=True)
-        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "."],
-                                 capture_output=True, text=True, check=False)
-        tracked = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--", "."],
-                                 capture_output=True, text=True, check=False)
-        if ignored.returncode == 0 and not tracked.stdout.strip():
-            raise FileNotFoundError(str(root))
         result = subprocess.run(
             [
                 "git",
@@ -409,6 +404,8 @@ def build_federated_catalog(sources: list[tuple[str, Path]]) -> dict[str, Any]:
     """This repository's catalog plus each extra source under a ``<name>/`` path prefix."""
 
     catalog = build_catalog()
+    if not catalog["documents"]:
+        raise ValueError(f"no documents under {ROOT}: refusing a federated catalog without the architecture documents")
     normalize_generated_catalog_entry(catalog)
     taken = {item["root_area"] for item in catalog["documents"]}
     names = [name for name, _ in sources]
@@ -577,6 +574,7 @@ def main() -> int:
             catalog = build_federated_catalog(args.source)
         except ValueError as exc:
             parser.error(str(exc))
+
         args.federated.parent.mkdir(parents=True, exist_ok=True)
         args.federated.write_text(json.dumps(catalog, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"  OK: wrote {args.federated} ({catalog['summary']['documents']} documents, {len(args.source)} extra sources)")

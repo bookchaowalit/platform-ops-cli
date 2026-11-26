@@ -47,7 +47,9 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
     """
     override = (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip()
     if override:
-        return Path(override).expanduser().resolve()
+        # Absolute but not resolved: path guards (delivery_context.ensure_path_boundary) must
+        # still see any "..", symlink or denied component of the override.
+        return Path.cwd() / Path(override).expanduser()
     if (tools_root / "docs").is_dir():
         return tools_root
     repo = main_checkout(tools_root.parent)
