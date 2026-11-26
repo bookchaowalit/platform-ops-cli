@@ -175,6 +175,10 @@ def main() -> int:
     source = place(args.source, SOURCE)
     output = place(args.output, DEFAULT_OUTPUT)
     manifest = place(args.manifest, DEFAULT_MANIFEST)
+    from _env import refuse_write_into_snapshot  # noqa: E402
+
+    for target in (output, manifest):
+        refuse_write_into_snapshot(target, "portable_document_export")
     try:
         rows, payload = write_export(source, output, manifest)
     except ValueError as exc:

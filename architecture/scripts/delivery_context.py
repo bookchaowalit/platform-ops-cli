@@ -138,7 +138,17 @@ def load_context(root: Path = ROOT) -> dict:
     require(set(groups) == GROUP_IDS, "group_registry_v1_required")
     require(set(roles) == set(positions), "role_position_bijection_required")
     manifest: dict[str, dict] = {}
-    knowledge_root = Path(os.environ.get("SOLO_KNOWLEDGE_ROOT", str(root.parent / "knowledge-base")))
+    # The shared lookup (_env.KNOWLEDGE_ROOT knows the store-snapshot layout) for the default
+    # document root; an explicit other root keeps its own sibling.
+    import _env  # noqa: E402
+
+    configured_knowledge = os.environ.get("SOLO_KNOWLEDGE_ROOT")
+    if configured_knowledge:
+        knowledge_root = Path(configured_knowledge)
+    elif Path(root).resolve() == _env.PROJECT_ROOT.resolve():
+        knowledge_root = _env.KNOWLEDGE_ROOT
+    else:
+        knowledge_root = Path(root).parent / "knowledge-base"
     knowledge_safe = False
     try:
         ensure_path_boundary(knowledge_root)
