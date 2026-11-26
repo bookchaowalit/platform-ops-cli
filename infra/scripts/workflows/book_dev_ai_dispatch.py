@@ -461,6 +461,7 @@ def build_provider_command(
             "--sandbox",
             sandbox,
             "--skip-git-repo-check",
+            "--strict-config",  # an unknown config key fails the run instead of being ignored
             "--color",
             "never",
             "--output-last-message",
@@ -501,8 +502,9 @@ def build_provider_command(
             guard_settings(guard),
             "--max-turns",
             str(max_turns),
-            "--output-format",
-            "text",
+            # With a schema, print mode returns JSON whose .structured_output follows it (claude -p --json-schema).
+            *(["--output-format", "json", "--json-schema", output_schema.read_text(encoding="utf-8")]
+              if output_schema else ["--output-format", "text"]),
         ]
 
     raise ValueError(f"unsupported provider: {provider}")
@@ -728,7 +730,7 @@ def run_provider(
             guard=guard,
             model=model,
             effort=effort if provider == "codex" else None,
-            output_schema=output_schema if provider == "codex" else None,
+            output_schema=output_schema if provider in {"codex", "claude"} else None,
         )
     except RuntimeError as exc:
         result["status"] = "unavailable"
@@ -771,8 +773,17 @@ def run_provider(
         encoding="utf-8",
     )
     if provider == "claude" and completed.stdout:
-        # Print mode writes the final message to stdout.
-        last_message_path.write_text(completed.stdout, encoding="utf-8")
+        # Print mode writes the final message to stdout; with --json-schema it is a JSON result whose
+        # structured_output is the schema-shaped answer (anything else stays as is and reads as unknown).
+        text = completed.stdout
+        if output_schema is not None:
+            try:
+                structured = json.loads(text).get("structured_output")
+                if structured is not None:
+                    text = json.dumps(structured, ensure_ascii=False)
+            except (ValueError, AttributeError):
+                pass
+        last_message_path.write_text(text, encoding="utf-8")
     result["exit_code"] = completed.returncode
     if completed.returncode == 0:
         result["status"] = "dispatched"
@@ -1927,10 +1938,10 @@ def build_review(
                     return "failed", results, {**flow, "error": installed["error"]}
                 review_prompt = build_review_prompt(
                     ticket, base=base, head=head, branch=branch, deps=dependency_note(installed),
-                    structured=reviewer == "codex",
+                    structured=reviewer in {"codex", "claude"},
                 )
                 schema = None
-                if reviewer == "codex":
+                if reviewer in {"codex", "claude"}:  # both CLIs take a JSON schema for the final answer
                     schema = Path(private) / "review.schema.json"
                     schema.write_text(json.dumps(REVIEW_SCHEMA), encoding="utf-8")
                 review = run_provider(
