@@ -58,7 +58,8 @@ def sections(text: str) -> list[tuple[str, str]]:
 
 def first_mermaid(body: str) -> str | None:
     match = MERMAID_RE.search(body)
-    return match.group(1).rstrip() if match else None
+    code = match.group(1).strip() if match else ""
+    return code or None  # an empty block is not a diagram
 
 
 GAP_HEADER = ["id", "as-is → to-be", "status", "owner", "evidence"]
@@ -76,7 +77,13 @@ def parse_gaps(body: str) -> list[dict] | None:
         if not in_table:
             head = [c.strip().lower() for c in line.strip().strip("|").split("|")]
             if head == GAP_HEADER:
-                in_table = True
+                in_table = "header"
+            continue
+        if in_table == "header":  # the next line must be the separator row
+            sep = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(sep) != 5 or not all(re.fullmatch(r":?-{3,}:?", c) for c in sep):
+                return None
+            in_table = True
             continue
         row = line.strip()
         if row.startswith("|"):
@@ -93,7 +100,7 @@ def parse_gaps(body: str) -> list[dict] | None:
         if status == "done" and not evidence:
             status = "todo"
         gaps.append({"id": cells[0], "change": cells[1], "status": status, "owner": cells[3], "evidence": evidence})
-    return gaps if in_table else None
+    return gaps if in_table is True else None
 
 
 def intro(text: str) -> str:
@@ -165,6 +172,9 @@ def parse_doc(text: str, today: dt.date) -> dict:
         problems.append("Gap table has no rows")
     if to_be is None and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
+    for g in gaps or []:
+        if g["id"] == "G0" and (g["status"] != "done" or not g["evidence"]):
+            problems.append("G0 (no gap) must be done with evidence")
     real_gaps = [g for g in gaps or [] if g["id"] != "G0"]  # G0 = "no gap" marker row
     counts = {s: sum(1 for g in real_gaps if g["status"] == s) for s in STATUSES}
     return {
@@ -191,12 +201,13 @@ def collect(root: Path, today: dt.date) -> dict:
         doc = repo / DOC
         # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
         chain = [repo / "docs", repo / "docs" / "diagrams", doc]
-        if doc.is_file() and not any(p.is_symlink() for p in chain) and doc.resolve().is_relative_to(repo.resolve()):
-            try:
-                text = doc.read_text(encoding="utf-8", errors="replace")
-            except OSError as error:
-                systems.append({**record, **parse_doc("", today), "problems": [f"unreadable: {error.strerror}"], "standard": False})
-                continue
+        try:
+            readable = doc.is_file() and not any(p.is_symlink() for p in chain) and doc.resolve().is_relative_to(repo.resolve())
+            text = doc.read_text(encoding="utf-8", errors="replace") if readable else None
+        except OSError as error:
+            systems.append({**record, **parse_doc("", today), "problems": [f"unreadable: {error.strerror}"], "standard": False})
+            continue
+        if text is not None:
             systems.append({**record, **parse_doc(text, today)})
         else:
             missing.append(record["repo"])
@@ -413,8 +424,10 @@ def main() -> int:
     # The report gathers private repositories' docs: keep the files owner-only.
     for name, body in (("as-is-to-be.json", json.dumps(report, ensure_ascii=False, indent=1) + "\n"), ("index.html", render_html(report))):
         target = args.out / name
-        target.write_text(body, encoding="utf-8")
-        target.chmod(0o600)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)  # also tightens a file left by an older run
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
     t = report["gap_totals"]
     print(f"{report['standard']}/{report['with_doc']} standard, {report['with_doc']}/{report['repositories']} with doc, "
           f"gaps done {t['done']}/{sum(t.values())} -> {args.out}")
