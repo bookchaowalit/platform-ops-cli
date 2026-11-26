@@ -51,7 +51,9 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
         # still see any "..", symlink or denied component of the override.
         chosen = Path.cwd() / Path(override).expanduser()
         if (chosen / ".snapshot.json").is_file():
+            # A snapshot folder is a symlink swapped by refreshes; path guards refuse symlinks.
             _warn_if_stale(chosen)
+            return chosen.resolve()
         return chosen
     if (tools_root / "docs").is_dir():
         return tools_root
@@ -103,7 +105,29 @@ PROJECT_ROOT = architecture_root()
 # the phase 3 cutover. Its parent is a cache folder, so sibling checkouts are looked up where the
 # architecture-docs clone would be (the owner's private/ folder of this clone's layout).
 IS_SNAPSHOT = (PROJECT_ROOT / ".snapshot.json").is_file()
-_DOCS_PARENT = (main_checkout(TOOLS_ROOT.parent).parent.parent / "private") if IS_SNAPSHOT else PROJECT_ROOT.parent
+def _snapshot_siblings() -> Path:
+    """Where sibling checkouts are when the documents come from a snapshot: beside this tooling's
+    main clone (plain sibling layout), else the owner's private/ folder (empire layout)."""
+    main = main_checkout(TOOLS_ROOT.parent)
+    if any((main.parent / name).is_dir() for name in ("knowledge-base", "architecture-docs")):
+        return main.parent
+    return main.parent.parent / "private"
+
+
+_DOCS_PARENT = _snapshot_siblings() if IS_SNAPSHOT else PROJECT_ROOT.parent
+
+
+def refuse_write_into_snapshot(target: Path, tool: str) -> None:
+    """Stop before writing ``target`` when it lies inside a store snapshot (any parent folder
+    with .snapshot.json): the next refresh would replace it."""
+    folder = Path(target).expanduser().absolute().parent
+    for candidate in (folder, *folder.parents):
+        if (candidate / ".snapshot.json").is_file():
+            raise SystemExit(
+                f"{tool}: {target} is inside a read-only store snapshot ({candidate}); pass a path "
+                "outside it, or write in an architecture-docs checkout (Git is the source until the "
+                "SPEC-001 phase 3 cutover)"
+            )
 
 
 def refuse_snapshot_write(tool: str, root: Path | None = None) -> None:

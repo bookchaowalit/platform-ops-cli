@@ -1070,6 +1070,8 @@ def command_import(args: argparse.Namespace) -> int:
     serialized = json.dumps(projection, ensure_ascii=False, indent=2) + "\n"
     unchanged = output_path.is_file() and output_path.read_text(encoding="utf-8") == serialized
     if not unchanged:
+        from _env import refuse_write_into_snapshot  # noqa: E402
+        refuse_write_into_snapshot(output_path, "free_saas_catalog")
         output_path.write_text(serialized, encoding="utf-8")
 
     result = {
@@ -1291,6 +1293,8 @@ def command_selector(args: argparse.Namespace) -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         unchanged = output_path.is_file() and output_path.read_text(encoding="utf-8") == serialized
         if not unchanged:
+            from _env import refuse_write_into_snapshot  # noqa: E402
+            refuse_write_into_snapshot(output_path, "free_saas_catalog")
             output_path.write_text(serialized, encoding="utf-8")
         status = "unchanged" if unchanged else "written"
 
