@@ -3,7 +3,7 @@
 platform-ops-cli (ชื่อเดิมใน README: `ops-toolkit`) **ไม่ใช่ service ที่ deploy** (`PRODUCT.md` §Operating Context) เป็น monorepo ของ Python scripts + owner CLI (`infra/cli.ts`) + Task adapters ที่เจ้าของและ AI agent เรียกจาก terminal และมี 3 workflows ที่รันบน GitHub Actions บน GitHub Actions ของ repo นี้เอง
 งานหลักในวันนี้แบ่งได้ 5 กลุ่ม: (1) daily workflows ที่อ่าน/เขียน cell APIs (tasks, goals, habits, diary …), (2) org hub registry sync, (3) Book Dev Linear dispatch (AI build → review → PR), (4) CI runner hosting (image + failover watchdog), (5) offline tests และ contract guards (`task check`)
 
-Last reviewed: 2026-11-26 · commit `d5dbf2e` (As-Is diagram อ่านจาก `5fdb2d9` และยังไม่ได้อ่านโค้ดใหม่ทั้งหมด [ต้องยืนยัน])
+Last reviewed: 2026-11-26 · commit `5fdb2d9` (As-Is diagram อ่านโค้ดถึง `5fdb2d9` เท่านั้น ยังไม่ได้อ่านโค้ดหลังจากนั้น [ต้องยืนยัน]; ตาราง Gap ทบทวนบน `d5dbf2e`)
 
 ## As-Is (จากโค้ดวันนี้)
 

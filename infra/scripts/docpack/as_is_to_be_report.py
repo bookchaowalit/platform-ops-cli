@@ -20,13 +20,13 @@ import html
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_override = os.environ.get("SOLO_BOOK_DEV_GITHUB_ROOT")
-DEFAULT_ROOT = Path(_override).expanduser() if _override else (
-    PROJECT_ROOT.parents[2] if PROJECT_ROOT.parent.name in {"private", "public"} else PROJECT_ROOT / "book-dev-github-unavailable"
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
+from _env import PROJECT_ROOT, book_dev_github_root  # noqa: E402
+
+DEFAULT_ROOT = book_dev_github_root()
 DEFAULT_OUT = PROJECT_ROOT / "data" / "generated" / "as-is-to-be"
 DOC = Path("docs") / "diagrams" / "01-business-process.md"
 SKIP_DIRS = {"node_modules", ".git", ".next", "dist", "build", ".venv", "venv", "__pycache__", "vendor", ".turbo", "coverage"}
@@ -64,7 +64,12 @@ def first_mermaid(body: str) -> str | None:
 def parse_gaps(body: str) -> list[dict]:
     gaps = []
     for line in body.splitlines():
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        row = line.strip()
+        if row.startswith("|"):
+            row = row[1:]
+        if row.endswith("|") and not row.endswith("\\|"):
+            row = row[:-1]
+        cells = [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", row)]
         if len(cells) < 5 or not re.fullmatch(r"G\d+", cells[0]):
             continue
         status = cells[2].lower()
@@ -86,29 +91,55 @@ def intro(text: str) -> str:
     return ""
 
 
+def first_paragraph(body: str) -> str:
+    for para in re.split(r"\n\s*\n", body):
+        para = para.strip()
+        if para and not para.startswith(("```", "Sources:", "#")):
+            return " ".join(para.split())
+    return ""
+
+
 def parse_doc(text: str, today: dt.date) -> dict:
     as_is = to_be = None
+    to_be_note = ""
+    seen_as_is = seen_to_be = False
     gaps: list[dict] | None = None
     for heading, body in sections(text):
         low = heading.lower()
-        if low.startswith("as-is") and as_is is None:
-            as_is = first_mermaid(body)
-        elif low.startswith("to-be") and to_be is None:
-            to_be = first_mermaid(body)
+        if low.startswith("as-is") and not seen_as_is:
+            seen_as_is, as_is = True, first_mermaid(body)
+        elif low.startswith("to-be") and not seen_to_be:
+            seen_to_be, to_be = True, first_mermaid(body)
+            if to_be is None:
+                to_be_note = first_paragraph(body)
         elif low == "gap" and gaps is None:
             gaps = parse_gaps(body)
     reviewed = REVIEWED_RE.search(text)
     reviewed_on = reviewed.group(1) if reviewed else None
-    age = (today - dt.date.fromisoformat(reviewed_on)).days if reviewed_on else None
     problems = []
-    if reviewed_on is None:
+    age = None
+    if reviewed_on is not None:
+        try:
+            age = (today - dt.date.fromisoformat(reviewed_on)).days
+        except ValueError:
+            problems.append(f"invalid Last reviewed date {reviewed_on}")
+            reviewed_on = None
+    elif not problems:  # no line at all (an invalid date was reported above)
         problems.append("no Last reviewed line")
-    elif age is not None and age > STALE_DAYS:
+    if age is not None and age > STALE_DAYS:
         problems.append(f"stale: reviewed {age} days ago")
+    if not intro(text):
+        problems.append("no summary paragraph")
     if as_is is None:
         problems.append("no As-Is diagram")
+    if not seen_to_be:
+        problems.append("no To-Be section")
+    elif to_be is None and not to_be_note:
+        problems.append("To-Be section is empty")
     if gaps is None:
         problems.append("no Gap table")
+    elif not gaps:
+        problems.append("Gap table has no rows")
     counts = {s: sum(1 for g in gaps or [] if g["status"] == s) for s in STATUSES}
     return {
         "summary": intro(text),
@@ -117,6 +148,7 @@ def parse_doc(text: str, today: dt.date) -> dict:
         "age_days": age,
         "as_is": as_is,
         "to_be": to_be,
+        "to_be_note": to_be_note,
         "gaps": gaps or [],
         "gap_counts": counts,
         "standard": not problems,
@@ -131,7 +163,8 @@ def collect(root: Path, today: dt.date) -> dict:
         owner = rel[0] if rel else ""
         record = {"repo": f"{owner}/{repo.name}", "path": str(repo.relative_to(root))}
         doc = repo / DOC
-        if doc.is_file():
+        # Only a regular file inside the clone; a symlink pointing elsewhere is never read.
+        if doc.is_file() and doc.resolve().is_relative_to(repo.resolve()):
             systems.append({**record, **parse_doc(doc.read_text(encoding="utf-8", errors="replace"), today)})
         else:
             missing.append(record["repo"])
@@ -170,9 +203,9 @@ def bar(counts: dict) -> str:
     return f'<div class="bar" role="img" aria-label="Gap {counts["done"]} จาก {total} เสร็จ">{segs}</div>'
 
 
-def diagram(code: str | None, empty: str) -> str:
+def diagram(code: str | None, empty: str, note: bool = False) -> str:
     if not code:
-        return f'<p class="none">{e(empty)}</p>'
+        return f'<p class="{"note" if note else "none"}">{code_spans(empty) if note else e(empty)}</p>'
     return f'<div class="dia"><pre class="mermaid">{e(code)}</pre></div>'
 
 
@@ -211,7 +244,7 @@ def render_system(s: dict) -> str:
   {f'<ul class="probs">{problems}</ul>' if problems else ''}
   <div class="pair">
     <section><h3>As-Is <small>วันนี้ จากโค้ด</small></h3>{diagram(s["as_is"], "ไม่มีภาพ As-Is")}</section>
-    <section><h3>To-Be <small>เป้าหมายที่เขียนไว้</small></h3>{diagram(s["to_be"], "ไม่มี To-Be ที่เขียนไว้")}</section>
+    <section><h3>To-Be <small>เป้าหมายที่เขียนไว้</small></h3>{diagram(s["to_be"], s.get("to_be_note") or "ไม่มี To-Be ที่เขียนไว้", note=bool(s.get("to_be_note")))}</section>
   </div>
   {table}
   <p class="src mono">{e(s["path"])}/docs/diagrams/01-business-process.md{f' · commit {e(s["reviewed_commit"])}' if s["reviewed_commit"] else ''}</p>
@@ -258,7 +291,7 @@ h2{font-size:1.15rem;margin:0}.owner{color:var(--muted)}
 .pair section{min-width:0;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 h3{margin:0 0 6px;font-size:.95rem;letter-spacing:.02em}h3 small{color:var(--muted);font-weight:400;margin-left:6px}
 .dia{overflow-x:auto}.dia pre{margin:0;background:none}
-.none{color:var(--muted);font-style:italic}
+.none{color:var(--muted);font-style:italic}.note{color:var(--muted);max-width:70ch}
 .tw{overflow-x:auto;margin-top:14px}
 table{border-collapse:collapse;width:100%;font-size:.88rem}
 th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -271,13 +304,36 @@ td.ev{color:var(--muted);min-width:16ch}
 """
 
 
+MERMAID_FALLBACK = '''<script>
+// The artifact viewer renders <pre class="mermaid"> itself. Opened as a plain file, or if the
+// viewer did not draw them, load Mermaid once and draw whatever is still text.
+setTimeout(function () {
+  var left = Array.prototype.filter.call(document.querySelectorAll("pre.mermaid"), function (n) {
+    return !n.querySelector("svg") && !n.hasAttribute("data-processed");
+  });
+  if (!left.length) return;
+  var tag = document.createElement("script");
+  tag.src = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js";
+  tag.onload = function () {
+    var dark = matchMedia("(prefers-color-scheme: dark)").matches && document.documentElement.dataset.theme !== "light"
+      || document.documentElement.dataset.theme === "dark";
+    window.mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+    window.mermaid.run({ nodes: left });
+  };
+  document.head.appendChild(tag);
+}, 1500);
+</script>'''
+
+
 def render_html(report: dict) -> str:
     t = report["gap_totals"]
     total = sum(t.values())
     legend = "".join(f'<span class="chip s-{s}">{STATUS_TH[s]} {t[s]}</span>' for s in STATUSES)
     systems = "".join(render_system(s) for s in report["systems"])
     missing = "".join(f"<li>{e(r)}</li>" for r in report["missing"])
-    return f"""<title>As-Is To-Be Board</title>
+    return f"""<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>As-Is To-Be Board</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap">
@@ -298,6 +354,7 @@ def render_html(report: dict) -> str:
 {systems}
 <details class="miss"><summary>ยังไม่มีไฟล์ As-Is/To-Be ({len(report["missing"])} repo)</summary><ul>{missing}</ul></details>
 </div>
+{MERMAID_FALLBACK}
 """
 
 
@@ -307,7 +364,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--today", type=dt.date.fromisoformat, default=dt.date.today())
     args = parser.parse_args()
-    if not args.root.is_dir():
+    if args.root is None or not args.root.is_dir():
         parser.error(f"root not found: {args.root} (set SOLO_BOOK_DEV_GITHUB_ROOT or --root)")
     report = collect(args.root, args.today)
     args.out.mkdir(parents=True, exist_ok=True)

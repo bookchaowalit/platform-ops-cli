@@ -92,6 +92,29 @@ class ParseTest(unittest.TestCase):
         self.assertIn("no Last reviewed line", doc["problems"])
         self.assertIsNone(doc["to_be"])
 
+    def test_escaped_pipe_keeps_columns(self):
+        text = STANDARD.replace("| G4 | d → e |", "| G4 | d \\| x → e |")
+        gap = report.parse_doc(text, TODAY)["gaps"][3]
+        self.assertEqual((gap["change"], gap["status"], gap["owner"]), ("d | x → e", "decide", "owner"))
+
+    def test_invalid_date_is_a_problem_not_a_crash(self):
+        doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-13-45"), TODAY)
+        self.assertFalse(doc["standard"])
+        self.assertIn("invalid Last reviewed date 2026-13-45", doc["problems"])
+
+    def test_text_to_be_is_kept(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ไม่มี To-Be ที่เขียนไว้ รอ owner")
+        doc = report.parse_doc(text, TODAY)
+        self.assertIsNone(doc["to_be"])
+        self.assertEqual(doc["to_be_note"], "ไม่มี To-Be ที่เขียนไว้ รอ owner")
+        self.assertTrue(doc["standard"], doc["problems"])
+
+    def test_missing_to_be_and_empty_gap(self):
+        text = STANDARD.split("## To-Be")[0] + "## Gap\n\n| ID | As-Is → To-Be | Status | Owner | Evidence |\n|---|---|---|---|---|\n"
+        doc = report.parse_doc(text, TODAY)
+        self.assertIn("no To-Be section", doc["problems"])
+        self.assertIn("Gap table has no rows", doc["problems"])
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])
@@ -109,15 +132,23 @@ class CollectTest(unittest.TestCase):
                     (repo / "docs" / "diagrams").mkdir(parents=True)
                     (repo / "docs" / "diagrams" / "01-business-process.md").write_text(text, encoding="utf-8")
                 (repo / "node_modules" / "x" / ".git").mkdir(parents=True)  # never counted
+            outside = root / "secret.md"
+            outside.write_text(STANDARD, encoding="utf-8")
+            linked = root / "owner" / "public" / "delta"
+            (linked / ".git").mkdir(parents=True)
+            (linked / "docs" / "diagrams").mkdir(parents=True)
+            (linked / "docs" / "diagrams" / "01-business-process.md").symlink_to(outside)
             data = report.collect(root, TODAY)
-            self.assertEqual(data["repositories"], 3)
+            self.assertEqual(data["repositories"], 4)
             self.assertEqual(data["with_doc"], 2)
             self.assertEqual(data["standard"], 1)
-            self.assertEqual(data["missing"], ["owner/gamma"])
+            self.assertEqual(data["missing"], ["owner/delta", "owner/gamma"])  # symlink out of the clone is not read
             self.assertEqual(data["systems"][0]["repo"], "owner/alpha")
             self.assertEqual(data["gap_totals"]["done"], 1)
             page = report.render_html(data)
-            self.assertTrue(page.startswith("<title>"))
+            self.assertTrue(page.startswith('<meta charset="utf-8">'))
+            self.assertIn("<title>As-Is To-Be Board</title>", page[:8192])
+            self.assertIn("mermaid.run", page)  # fallback renderer when the viewer does not draw diagrams
             self.assertIn('<pre class="mermaid">', page)
             self.assertIn("&lt;b&gt;today&lt;/b&gt;", page)  # diagram text is escaped
             self.assertNotIn("<b>today</b>", page)
