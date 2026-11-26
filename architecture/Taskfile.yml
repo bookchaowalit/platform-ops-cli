@@ -92,7 +92,7 @@ tasks:
     desc: Review gate (ADRs, >5 documents), `task check`, then write DIR's changed documents with if_version (REVIEWED=1 = owner reviewed)
     requires: {vars: [DIR]}
     cmds:
-      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" push "{{.DIR}}"{{if .REVIEWED}} --reviewed{{end}}'
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" push "{{.DIR}}"{{if eq .REVIEWED "1"}} --reviewed{{end}}'
 
   revert:
     dir: '{{.USER_WORKING_DIR}}'
