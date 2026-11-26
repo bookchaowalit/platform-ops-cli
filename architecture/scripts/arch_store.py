@@ -24,6 +24,7 @@ nothing secret and no document text is printed here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -133,6 +134,25 @@ def pull(directory: Path, *, run: Runner = _run, environ=os.environ) -> int:
         print(f"arch_store: {directory} exists and is not empty; push or remove it first", file=sys.stderr)
         return 2
     existed = directory.exists()
+    # One pull per folder: a second pull into the same empty folder stops here, so a failed pull
+    # only ever cleans up what it wrote itself.
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    lock = directory.parent / f".{directory.name}.arch-pull.lock"
+    try:
+        os.close(os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        print(f"arch_store: another pull into {directory} is running ({lock})", file=sys.stderr)
+        return 2
+    try:
+        return _pull_locked(directory, existed, run=run, environ=environ)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _pull_locked(directory: Path, existed: bool, *, run: Runner, environ) -> int:
+    if directory.exists() and any(directory.iterdir()):
+        print(f"arch_store: {directory} is no longer empty; nothing pulled", file=sys.stderr)
+        return 2
     with tempfile.TemporaryDirectory(prefix="arch-manifest-") as scratch:
         manifest = Path(scratch) / "store-manifest.json"
         args = ["pull", "--space", SPACE, "--out", str(directory), "--manifest", str(manifest)]
@@ -174,8 +194,13 @@ def _staged(directory: Path, *, run: Runner) -> tuple[str, list[str], dict]:
             raise SystemExit(f"arch_store: {directory} is not a working copy (git {step[0]} failed)")
     tree = run([*git, "write-tree"], env=env, capture=True).stdout.strip()
     names = run([*git, "diff", "--cached", "--name-only", "-z", "--no-renames", base], env=env, capture=True)
+    gone = run([*git, "diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=D", base],
+               env=env, capture=True)
+    files = run([*git, "ls-files", "-z"], env=env, capture=True)
     shutil.rmtree(scratch, ignore_errors=True)
-    return tree, sorted(p for p in (names.stdout or "").split("\0") if p), {"base": base}
+    split = lambda out: sorted(p for p in (out or "").split("\0") if p)  # noqa: E731
+    return tree, split(names.stdout), {"base": base, "deleted": set(split(gone.stdout)),
+                                       "files": split(files.stdout)}
 
 
 def changed_paths(directory: Path, *, run: Runner = _run) -> list[str]:
@@ -195,7 +220,14 @@ REVIEW_PROMPT = (
     "its own line starting with a severity tag [P0] (harmful), [P1] (wrong), [P2] (should fix) or [P3] "
     "(nit), then the path. If there is nothing to report, answer with exactly one line: no findings"
 )
-VERDICT_LINE = re.compile(r"^\s*(?:[-*]\s*)?\[P[0-3]\]")
+TAG = re.compile(r"\[P[0-3]\]")
+# As the Book Dev reviewer: no user config, rules, MCP servers, web search, plugins or connectors,
+# which would act outside the read-only sandbox.
+CODEX_ISOLATION = (
+    "--ignore-user-config", "--ignore-rules", "-c", "mcp_servers={}", "-c", 'web_search="disabled"',
+    *(arg for feature in ("apps", "plugins", "remote_plugin", "browser_use", "computer_use", "in_app_browser",
+                          "image_generation", "multi_agent") for arg in ("--disable", feature)),
+)
 
 
 def _diff(directory: Path, base: str, *, run: Runner) -> str:
@@ -220,13 +252,13 @@ def review(directory: Path, base: str, *, run: Runner = _run) -> int:
         return 2
     with tempfile.TemporaryDirectory(prefix="arch-review-") as scratch:
         (Path(scratch) / "change.diff").write_text(_diff(directory, base, run=run), encoding="utf-8")
-        result = run(["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check",
-                      "-c", "mcp_servers={}", "-C", scratch, REVIEW_PROMPT], cwd=Path(scratch),
-                     capture=True, stdin="")
+        result = run(["codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check", *CODEX_ISOLATION,
+                      "-C", scratch, REVIEW_PROMPT], cwd=Path(scratch), capture=True, stdin="")
     text = result.stdout or ""
     (directory / REVIEW_FILE).write_text(text, encoding="utf-8")
     lines = [line for line in text.strip().splitlines() if line.strip()]
-    tagged = [line for line in lines if VERDICT_LINE.match(line)]
+    # A severity tag anywhere on a line counts (numbered lists, bold, quotes): a [P1] is never lost.
+    tagged = [line for line in lines if TAG.search(line)]
     clean = bool(lines) and lines[-1].strip().lower().rstrip(".") == "no findings"
     if result.returncode != 0 or not (tagged or clean):
         print(f"arch_store: the review gave no verifiable verdict (exit {result.returncode}); nothing "
@@ -313,7 +345,7 @@ def push(directory: Path, *, reviewed: bool = False, run: Runner = _run, environ
     if not paths:
         print("nothing to push")
         return 0
-    if _mirror_live(directory) and MIRROR not in paths:
+    if _mirror_live(directory) and MIRROR not in info["deleted"]:
         print("arch_store: store-mirror.yml is still in the store, so Git is still the source (SPEC-001 "
               "phase 3 cutover not done); nothing written. The cutover push deletes that file.", file=sys.stderr)
         return 2
@@ -331,17 +363,31 @@ def push(directory: Path, *, reviewed: bool = False, run: Runner = _run, environ
     if check(directory, run=run) != 0:
         print("arch_store: `task check` failed against the working copy; nothing written", file=sys.stderr)
         return 1
-    # What is written must be what was scanned, reviewed and checked.
+    # What is written must be what was scanned, reviewed and checked: the tree is the same as
+    # before the checks, and store_sync writes exactly this file set with these hashes.
     if _staged(directory, run=run)[0] != tree:
         print("arch_store: the working copy changed during the push; nothing written, push again", file=sys.stderr)
         return 1
-    code = store_sync(["commit", "--space", SPACE, "--root", str(directory),
-                       "--manifest", str(directory / MANIFEST)], run=run, environ=environ)
+    frozen = {}
+    for path in info["files"]:
+        file = directory / path
+        if file.is_file() and not file.is_symlink():
+            frozen[path] = hashlib.sha256(file.read_bytes()).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="arch-frozen-") as scratch:
+        files_from = Path(scratch) / "frozen.json"
+        files_from.write_text(json.dumps(frozen), encoding="utf-8")
+        code = store_sync(["commit", "--space", SPACE, "--root", str(directory),
+                           "--manifest", str(directory / MANIFEST), "--files-from", str(files_from)],
+                          run=run, environ=environ)
     if code == 0:
-        # The pushed tree is the new base: the next diff and push start from here.
-        run([*GIT, "-C", str(directory), "add", "-A"])
-        run([*GIT, "-C", str(directory), "commit", "-q", "--allow-empty", "-m", "pushed to store space architecture-docs"])
-        _record_base(directory, run=run)
+        # The pushed tree (not whatever the folder holds now) is the new base.
+        git = [*GIT, "-C", str(directory)]
+        made = run([*git, "commit-tree", tree, "-p", info["base"], "-m", "pushed to store space architecture-docs"],
+                   capture=True)
+        if made.returncode == 0 and made.stdout.strip():
+            run([*git, "update-ref", "HEAD", made.stdout.strip()])
+            run([*git, "read-tree", "HEAD"])
+            (directory / BASE).write_text(made.stdout.strip() + "\n", encoding="utf-8")
     return code
 
 

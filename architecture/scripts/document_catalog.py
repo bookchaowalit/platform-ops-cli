@@ -576,6 +576,8 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
 
+        from _env import refuse_write_into_snapshot  # noqa: E402
+        refuse_write_into_snapshot(args.federated.expanduser().resolve(), "document_catalog --federated")
         args.federated.parent.mkdir(parents=True, exist_ok=True)
         args.federated.write_text(json.dumps(catalog, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         print(f"  OK: wrote {args.federated} ({catalog['summary']['documents']} documents, {len(args.source)} extra sources)")
