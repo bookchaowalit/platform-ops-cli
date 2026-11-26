@@ -430,6 +430,8 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
                 step=args.step, artifact=args.artifact_id, offset=args.offset, limit=args.limit)
             print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2))
         elif args.write:
+            from _env import refuse_snapshot_write  # noqa: E402
+            refuse_snapshot_write("delivery_context", root)
             target = safe_local(root, GENERATED, exists=False)
             require(target.parent.is_dir(), "generated_parent_missing")
             target.write_text(render_role_map(context), encoding="utf-8")

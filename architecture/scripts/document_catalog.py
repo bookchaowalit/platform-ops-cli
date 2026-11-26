@@ -139,10 +139,11 @@ def iter_candidate_paths(root: Path = ROOT) -> Iterable[Path]:
         # A store snapshot (known by its .snapshot.json stamp, SPEC-001) has no .git: inside
         # another repository git would answer for that repository, so walk the disk. Everywhere
         # else keep git's tracked/unignored view, so files git ignores stay out.
-        if (root / ".snapshot.json").is_file():
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        # A checkout's own top level always keeps git's view, even if a stamp was copied into it.
+        if Path(top).resolve() != root.resolve() and (root / ".snapshot.json").is_file():
             raise FileNotFoundError(str(root))
-        subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-                       capture_output=True, text=True, check=True)
         result = subprocess.run(
             [
                 "git",
@@ -584,6 +585,9 @@ def main() -> int:
 
     catalog = build_catalog()
     normalize_generated_catalog_entry(catalog)
+    if args.write:
+        from _env import refuse_snapshot_write  # noqa: E402
+        refuse_snapshot_write("document_catalog")
     if args.write and not catalog["summary"]["documents"]:
         print(f"  FAIL: no documents under {ROOT}: refusing to write an empty catalog")
         return 1

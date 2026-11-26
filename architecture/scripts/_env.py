@@ -49,7 +49,10 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
     if override:
         # Absolute but not resolved: path guards (delivery_context.ensure_path_boundary) must
         # still see any "..", symlink or denied component of the override.
-        return Path.cwd() / Path(override).expanduser()
+        chosen = Path.cwd() / Path(override).expanduser()
+        if (chosen / ".snapshot.json").is_file():
+            _warn_if_stale(chosen)
+        return chosen
     if (tools_root / "docs").is_dir():
         return tools_root
     repo = main_checkout(tools_root.parent)
@@ -96,10 +99,28 @@ PROJECT_ROOT = architecture_root()
 # (link_check_guard, document_catalog); other scripts fail on the first file they cannot read, and
 # commands that take their own paths (--catalog, --root, --help) still work without a default root.
 
+# A store snapshot (SPEC-001) is read-only: a refresh replaces it, and Git stays the source until
+# the phase 3 cutover. Its parent is a cache folder, so sibling checkouts are looked up where the
+# architecture-docs clone would be (the owner's private/ folder of this clone's layout).
+IS_SNAPSHOT = (PROJECT_ROOT / ".snapshot.json").is_file()
+_DOCS_PARENT = (main_checkout(TOOLS_ROOT.parent).parent.parent / "private") if IS_SNAPSHOT else PROJECT_ROOT.parent
+
+
+def refuse_snapshot_write(tool: str, root: Path | None = None) -> None:
+    """Stop a generator before it writes into a store snapshot (the next refresh would drop it).
+    ``root`` is the tree the generator is about to write (default: the document root)."""
+    target = Path(root) if root is not None else PROJECT_ROOT
+    if (target / ".snapshot.json").is_file():
+        raise SystemExit(
+            f"{tool}: {target} is a read-only store snapshot; write in an architecture-docs "
+            "checkout (SOLO_ARCHITECTURE_ROOT) - Git is the source until the SPEC-001 phase 3 cutover"
+        )
+
+
 # Workspace documentation (projects/, roles/, learning/, quiz/, goals/ ...) lives in
 # bookchaowalit/knowledge-base; override with SOLO_KNOWLEDGE_ROOT.
 KNOWLEDGE_ROOT = Path(os.environ.get(
-    "SOLO_KNOWLEDGE_ROOT", str(PROJECT_ROOT.parent / "knowledge-base")
+    "SOLO_KNOWLEDGE_ROOT", str(_DOCS_PARENT / "knowledge-base")
 )).expanduser()
 KNOWLEDGE_BASE = KNOWLEDGE_ROOT / "knowledge"
 
@@ -109,8 +130,8 @@ KNOWLEDGE_DIRS = frozenset({
     "habits", "decisions", "tasks", "sessions", "documentation-assets",
 })
 
-# The sibling parent folder (default: the folder that holds this checkout).
-SIBLINGS_ROOT = PROJECT_ROOT.parent
+# The sibling parent folder (default: the folder that holds the document checkout).
+SIBLINGS_ROOT = _DOCS_PARENT
 
 
 # Repositories renamed without the solo- prefix whose SOLO_<NAME>_ROOT override

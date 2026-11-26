@@ -15,7 +15,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 # Sibling repositories live next to this checkout (same parent folder) unless a
 # SOLO_<NAME>_ROOT variable points elsewhere. ops-toolkit never depends on the
 # solo-empire hub: it has no path back to it.
-SIBLINGS_PARENT = PROJECT_ROOT.parent
+def main_checkout(repo_root: Path) -> Path:
+    """The main clone of repo_root: itself, or for a linked worktree (.git is a file
+    "gitdir: <main>/.git/worktrees/<name>") the clone it belongs to."""
+    marker = repo_root / ".git"
+    if marker.is_file():
+        text = marker.read_text(encoding="utf-8", errors="replace").strip()
+        if text.startswith("gitdir:"):
+            gitdir = Path(text[len("gitdir:"):].strip())
+            if not gitdir.is_absolute():
+                gitdir = (marker.parent / gitdir).resolve()
+            if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
+                return gitdir.parent.parent.parent
+    return repo_root
+
+
+# From a linked worktree (outside the clone folder) siblings are found beside the main clone.
+SIBLINGS_PARENT = main_checkout(PROJECT_ROOT).parent
 
 # Canonical relative path from repository root
 DEFAULT_DB_REL = Path("data") / "runtime" / "operations.db"
