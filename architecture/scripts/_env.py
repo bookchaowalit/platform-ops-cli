@@ -114,7 +114,10 @@ def _snapshot_siblings() -> Path:
     return main.parent.parent / "private"
 
 
-_DOCS_PARENT = _snapshot_siblings() if IS_SNAPSHOT else PROJECT_ROOT.parent
+# A store working copy (arch_store.py pull, SPEC-001 D3) sits in a worktrees folder, not beside the
+# other clones, so its siblings are found the same way as a snapshot's.
+IS_WORKING_COPY = (PROJECT_ROOT / ".git" / "store-manifest.json").is_file()
+_DOCS_PARENT = _snapshot_siblings() if IS_SNAPSHOT or IS_WORKING_COPY else PROJECT_ROOT.parent
 
 
 def refuse_write_into_snapshot(target: Path, tool: str) -> None:

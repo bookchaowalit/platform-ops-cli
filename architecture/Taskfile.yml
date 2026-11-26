@@ -16,7 +16,7 @@ vars:
       common=$(git -C "{{.TASKFILE_DIR}}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
         && main=$(dirname "$common") || main="{{.TASKFILE_DIR}}/.."
       cd "$main/../.." && pwd
-  STANDALONE_TESTS: 'architecture_root_test.py archimate_dtd_test.py delivery_document_pack_test.py delivery_refinement_flow_test.py design_floor_drift_test.py product_delivery_flow_test.py'
+  STANDALONE_TESTS: 'arch_store_test.py architecture_root_test.py archimate_dtd_test.py delivery_document_pack_test.py delivery_refinement_flow_test.py design_floor_drift_test.py product_delivery_flow_test.py'
 
 tasks:
   default:
@@ -72,6 +72,33 @@ tasks:
       - for t in {{.STANDALONE_TESTS}}; do echo "== $t"; SOLO_ARCHITECTURE_ROOT=/nonexistent/architecture-docs SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} "{{.TASKFILE_DIR}}/tests/$t" || exit 1; done
       - '{{.PY}} -m unittest discover -s "{{.TASKFILE_DIR}}/messaging/tests" -p "*_test.py"'
       - 'SOLO_ARCHITECTURE_ALLOW_MISSING=1 {{.PY}} "{{.TASKFILE_DIR}}/scripts/design_floor_drift.py" --check'
+
+  # Edit flow after the cutover (SPEC-001 D3): pull a working copy from the store, edit, push.
+  pull:
+    dir: '{{.USER_WORKING_DIR}}'
+    desc: New working copy of store space architecture-docs (TASK=<name> -> $SOLO_WORKTREES_ROOT/arch-docs-<name>, or DIR=<folder>)
+    cmds:
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" pull {{if .DIR}}--dir "{{.DIR}}"{{else}}--task "{{.TASK}}"{{end}}'
+
+  status:
+    dir: '{{.USER_WORKING_DIR}}'
+    desc: What `push` would write from working copy DIR (paths only; nothing is written)
+    requires: {vars: [DIR]}
+    cmds:
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" status "{{.DIR}}"'
+
+  push:
+    dir: '{{.USER_WORKING_DIR}}'
+    desc: Review gate (ADRs, >5 documents), `task check`, then write DIR's changed documents with if_version (REVIEWED=1 = owner reviewed)
+    requires: {vars: [DIR]}
+    cmds:
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" push "{{.DIR}}"{{if .REVIEWED}} --reviewed{{end}}'
+
+  revert:
+    dir: '{{.USER_WORKING_DIR}}'
+    desc: 'Write an old version of one document back as its newest: task arch:revert -- <path> <version>'
+    cmds:
+      - '{{.PY}} "{{.TASKFILE_DIR}}/scripts/arch_store.py" revert {{.CLI_ARGS}}'
 
   docs:catalog:
     dir: '{{.USER_WORKING_DIR}}'
