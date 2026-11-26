@@ -174,9 +174,15 @@ def review(directory: Path, *, run: Runner = _run) -> int:
 
 
 def check(directory: Path, *, run: Runner = _run) -> int:
-    """`task check` of this tooling against the working copy (the old PR gate)."""
+    """`task check` of this tooling against the working copy (the old PR gate).
+
+    The copy holds store content, never code to run: the check runs from the tooling folder (the
+    folder ``python -m unittest`` puts on sys.path) without PYTHONPATH, so a ``yaml.py`` (or any
+    module name) written to the store is never imported; the copy is reached only as the document
+    root. (PYTHONSAFEPATH is not an option: the scripts import ``_env`` from their own folder.)"""
     env = {**os.environ, "SOLO_ARCHITECTURE_ROOT": str(directory)}
-    return run(["task", "--taskfile", str(TOOLS_ROOT / "Taskfile.yml"), "check"], cwd=directory, env=env).returncode
+    env.pop("PYTHONPATH", None)
+    return run(["task", "--taskfile", str(TOOLS_ROOT / "Taskfile.yml"), "check"], cwd=TOOLS_ROOT, env=env).returncode
 
 
 def push(directory: Path, *, reviewed: bool = False, run: Runner = _run, environ=os.environ) -> int:

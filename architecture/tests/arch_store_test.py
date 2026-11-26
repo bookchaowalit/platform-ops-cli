@@ -40,7 +40,7 @@ class Recorder:
                 return subprocess.CompletedProcess(command, 0, "", "")
             return subprocess.CompletedProcess(command, self.commit if args[0] == "commit" else 0, "", "")
         if command[0] == "task":
-            self.check_env = env
+            self.check_env, self.check_cwd = env, Path(cwd).resolve()
             return subprocess.CompletedProcess(command, self.check, "", "")
         if command[0] == "codex":
             return subprocess.CompletedProcess(command, self.review_rc, self.review, "")
@@ -101,6 +101,9 @@ class ArchStoreTest(unittest.TestCase):
         self.assertEqual(arch_store.push(copy, run=run, environ=self.env), 1)
         self.assertEqual(run.ran("commit"), [])
         self.assertEqual(run.check_env["SOLO_ARCHITECTURE_ROOT"], str(copy.resolve()))
+        # Store content is never on the import path of the check.
+        self.assertNotIn("PYTHONPATH", run.check_env)
+        self.assertNotEqual(run.check_cwd, copy.resolve())
 
     def test_a_clean_push_commits_and_moves_the_base(self) -> None:
         run = Recorder()
