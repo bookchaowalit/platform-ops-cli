@@ -12,7 +12,7 @@ from pathlib import Path
 
 OPS_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(OPS_ROOT / "infra" / "scripts" / "utils"))
-from _env import legacy_env_name  # noqa: E402
+from _env import architecture_root, legacy_env_name  # noqa: E402
 
 
 def sibling(repo: str) -> Path:
@@ -20,7 +20,8 @@ def sibling(repo: str) -> Path:
     return Path(override).expanduser() if override else OPS_ROOT.parent / repo
 
 
-ARCHITECTURE_ROOT = sibling("architecture-docs")
+# Same lookup as the scripts (checkout in either visibility folder, else the store snapshot).
+ARCHITECTURE_ROOT = architecture_root()
 KNOWLEDGE_ROOT = sibling("knowledge-base")
 SKILLS_ROOT = sibling("platform-agent-skills")
 

@@ -67,5 +67,18 @@ class ArchitectureRootTest(unittest.TestCase):
         (worktree / ".git").write_text("gitdir: ../../repositories/public/platform-ops-cli/.git/worktrees/wt\n")
         self.assertEqual(architecture_root({}, worktree / "architecture"), private.resolve())
 
+    def test_store_snapshot_when_no_checkout_exists(self) -> None:
+        tools = _ops(self.base)
+        version = self.base / "cache" / "architecture-docs.versions" / "v1"
+        version.mkdir(parents=True)
+        (version / ".snapshot.json").write_text("{}", encoding="utf-8")
+        link = self.base / "cache" / "architecture-docs"
+        link.symlink_to(version, target_is_directory=True)
+        got = architecture_root({"SOLO_ARCHITECTURE_SNAPSHOT": str(link)}, tools)
+        self.assertEqual(got, version.resolve())
+        (version / ".snapshot.json").unlink()  # no stamp: not a snapshot
+        self.assertEqual(architecture_root({"SOLO_ARCHITECTURE_SNAPSHOT": str(link)}, tools),
+                         self.base / "private" / "architecture-docs")
+
 if __name__ == "__main__":
     unittest.main()

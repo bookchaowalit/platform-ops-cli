@@ -152,9 +152,31 @@ def sibling_repo_root(repo: str) -> Path:
 # lives in bookchaowalit/knowledge-base (SOLO_KNOWLEDGE_ROOT, default ../knowledge-base).
 KNOWLEDGE_ROOT = sibling_repo_root("knowledge-base")
 KNOWLEDGE_BASE = KNOWLEDGE_ROOT / "knowledge"
-# Architecture docs, systems, operations, templates: bookchaowalit/architecture-docs
-# (SOLO_ARCHITECTURE_ROOT, default ../architecture-docs).
-ARCHITECTURE_ROOT = sibling_repo_root("architecture-docs")
+# Architecture docs, systems, operations, templates (architecture-docs SPEC-001 phase 2):
+# SOLO_ARCHITECTURE_ROOT, else the architecture-docs checkout (../architecture-docs or the other
+# visibility folder), else the local snapshot of store space architecture-docs kept by the hub's
+# knowledge_snapshot.py --space architecture-docs (SOLO_ARCHITECTURE_SNAPSHOT, default
+# ~/.cache/solo-empire/architecture-docs). Git stays the source until the phase 3 cutover.
+SNAPSHOT_STAMP = ".snapshot.json"
+
+
+def architecture_snapshot(environ=os.environ) -> Path:
+    override = (environ.get("SOLO_ARCHITECTURE_SNAPSHOT") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".cache" / "solo-empire" / "architecture-docs"
+
+
+def architecture_root(environ=os.environ) -> Path:
+    if (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip():
+        return sibling_repo_root("architecture-docs")
+    checkout = sibling_repo_root("architecture-docs")
+    if checkout.is_dir():
+        return checkout
+    snapshot = architecture_snapshot(environ)
+    # Resolved: the snapshot folder is a symlink that refreshes swap atomically.
+    return snapshot.resolve() if (snapshot / SNAPSHOT_STAMP).is_file() else checkout
+
+
+ARCHITECTURE_ROOT = architecture_root()
 # Agent skills: bookchaowalit/platform-agent-skills (SOLO_SKILLS_ROOT, default ../platform-agent-skills).
 SKILLS_ROOT = sibling_repo_root("platform-agent-skills")
 # Registry of repositories/systems (the `repository-catalog` folder). It is owned by
@@ -434,7 +456,7 @@ def skip_without_knowledge(guard: str) -> None:
 def skip_without_architecture(tool: str) -> None:
     """Exit 0 with a clear SKIP line when the architecture-docs checkout is absent."""
     if not ARCHITECTURE_ROOT.is_dir():
-        print(f"SKIP: {tool}: architecture-docs checkout not found at {ARCHITECTURE_ROOT} (set SOLO_ARCHITECTURE_ROOT)")
+        print(f"SKIP: {tool}: architecture documents not found at {ARCHITECTURE_ROOT} (set SOLO_ARCHITECTURE_ROOT, or refresh the store snapshot)")
         raise SystemExit(0)
 
 
