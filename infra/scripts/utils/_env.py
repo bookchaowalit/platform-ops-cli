@@ -185,12 +185,11 @@ def architecture_snapshot(environ=os.environ) -> Path:
 def architecture_root(environ=os.environ) -> Path:
     if (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip():
         return sibling_repo_root("architecture-docs")
-    checkout = sibling_repo_root("architecture-docs")
-    if checkout.is_dir():
-        return checkout
+    # The store is the source since the SPEC-001 phase 3 cutover: the snapshot wins over a
+    # (frozen) checkout, which is only the fallback.
     snapshot = architecture_snapshot(environ)
     if not (snapshot / SNAPSHOT_STAMP).is_file():
-        return checkout
+        return sibling_repo_root("architecture-docs")
     warn_if_stale_snapshot(snapshot)
     # Resolved: the snapshot folder is a symlink that refreshes swap atomically.
     return snapshot.resolve()

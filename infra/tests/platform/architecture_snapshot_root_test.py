@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""_env.architecture_root(): env -> checkout -> store snapshot (architecture-docs SPEC-001 phase 2)."""
+"""_env.architecture_root(): env -> store snapshot -> checkout (architecture-docs SPEC-001 phase 3)."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class ArchitectureSnapshotRootTest(unittest.TestCase):
         self.link = self.base / "arch"
         self.link.symlink_to(version, target_is_directory=True)
 
-    def test_snapshot_is_used_only_without_a_checkout(self) -> None:
+    def test_the_snapshot_wins_over_a_frozen_checkout(self) -> None:
         missing = self.base / "no-checkout"
         with patch.object(_env, "sibling_repo_root", return_value=missing), \
                 patch.dict(os.environ, {"SOLO_ARCHITECTURE_SNAPSHOT": str(self.link)}):
@@ -35,7 +35,11 @@ class ArchitectureSnapshotRootTest(unittest.TestCase):
         with patch.object(_env, "sibling_repo_root", return_value=checkout), \
                 patch.dict(os.environ, {"SOLO_ARCHITECTURE_SNAPSHOT": str(self.link)}):
             os.environ.pop("SOLO_ARCHITECTURE_ROOT", None)
-            self.assertEqual(_env.architecture_root(), checkout)
+            self.assertEqual(_env.architecture_root(), self.version.resolve())
+        with patch.object(_env, "sibling_repo_root", return_value=checkout), \
+                patch.dict(os.environ, {"SOLO_ARCHITECTURE_SNAPSHOT": str(self.base / "none")}):
+            os.environ.pop("SOLO_ARCHITECTURE_ROOT", None)
+            self.assertEqual(_env.architecture_root(), checkout)  # no snapshot: the fallback
 
     def test_explicit_root_wins(self) -> None:
         with patch.dict(os.environ, {"SOLO_ARCHITECTURE_ROOT": str(self.base / "explicit"),
