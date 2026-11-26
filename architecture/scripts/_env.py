@@ -38,12 +38,14 @@ def main_checkout(repo_root: Path) -> Path:
 def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path:
     """The architecture document tree.
 
-    Order: SOLO_ARCHITECTURE_ROOT (a store snapshot or a checkout) -> the tools folder itself when
-    it still sits inside the document tree (legacy layout, docs/ next to scripts/) -> the
-    architecture-docs sibling of the platform-ops-cli clone (``../architecture-docs``) -> the
-    empire clone folder, where ops-cli is under public/ and the documents under private/ -> the local
-    store snapshot (SOLO_ARCHITECTURE_SNAPSHOT, default ~/.cache/solo-empire/architecture-docs, known
-    by its .snapshot.json stamp; SPEC-001 phase 2). A linked worktree resolves from its main clone.
+    Order: SOLO_ARCHITECTURE_ROOT (a store snapshot, a working copy or a checkout) -> the tools
+    folder itself when it still sits inside the document tree (legacy layout, docs/ next to
+    scripts/) -> the local store snapshot (SOLO_ARCHITECTURE_SNAPSHOT, default
+    ~/.cache/solo-empire/architecture-docs, known by its .snapshot.json stamp) -> the
+    architecture-docs sibling of the platform-ops-cli clone (``../architecture-docs``) -> the empire
+    clone folder, where ops-cli is under public/ and the documents under private/. Since the SPEC-001
+    phase 3 cutover (2026-11-26) the store is the source and a checkout is frozen, so the snapshot
+    wins. A linked worktree resolves from its main clone.
     """
     override = (environ.get("SOLO_ARCHITECTURE_ROOT") or "").strip()
     if override:
@@ -57,20 +59,17 @@ def architecture_root(environ=os.environ, tools_root: Path = TOOLS_ROOT) -> Path
         return chosen
     if (tools_root / "docs").is_dir():
         return tools_root
-    repo = main_checkout(tools_root.parent)
-    sibling = repo.parent / "architecture-docs"
-    if sibling.is_dir():
-        return sibling
-    private = repo.parent.parent / "private" / "architecture-docs"
-    if private.is_dir():
-        return private
-    # Store snapshot (SPEC-001 phase 2), resolved: refreshes swap the folder symlink atomically.
+    # Store snapshot, resolved: refreshes swap the folder symlink atomically.
     snapshot_override = (environ.get("SOLO_ARCHITECTURE_SNAPSHOT") or "").strip()
     snapshot = Path(snapshot_override).expanduser() if snapshot_override else Path.home() / ".cache" / "solo-empire" / "architecture-docs"
     if (snapshot / ".snapshot.json").is_file():
         _warn_if_stale(snapshot)
         return snapshot.resolve()
-    return private
+    repo = main_checkout(tools_root.parent)
+    sibling = repo.parent / "architecture-docs"
+    if sibling.is_dir():
+        return sibling
+    return repo.parent.parent / "private" / "architecture-docs"
 
 
 def _warn_if_stale(snapshot: Path, max_age_hours: float = 24) -> None:
