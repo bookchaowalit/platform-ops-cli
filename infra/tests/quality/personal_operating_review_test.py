@@ -69,5 +69,52 @@ class PersonalOperatingReviewTest(unittest.TestCase):
         self.assertIn("Weekly Review", report)
 
 
+
+class ReviewDestinationTest(unittest.TestCase):
+    """SPEC-001 phase 2: a review goes into the checkout while Git is the source, else the store."""
+
+    def test_a_git_checkout_gets_the_file(self) -> None:
+        import tempfile
+        import personal_operating_review as review
+        root = Path(tempfile.mkdtemp())
+        (root / ".git").mkdir()
+        target = review.write_review("operations/evidence/R.md", "# R\n", root=root, open_store=lambda **_: None)
+        self.assertEqual(target, str(root / "operations/evidence/R.md"))
+        self.assertEqual((root / "operations/evidence/R.md").read_text(encoding="utf-8"), "# R\n")
+
+    def test_a_snapshot_root_writes_to_the_store_with_if_version(self) -> None:
+        import tempfile
+        import personal_operating_review as review
+        root = Path(tempfile.mkdtemp())  # no .git: a store snapshot
+        calls: list[tuple] = []
+
+        class FakeStore:
+            def get(self, path):
+                return (b"old", 3)
+
+            def put(self, path, content, *, if_version):
+                calls.append((path, content, if_version))
+                return 4
+
+        spaces: list[str] = []
+
+        def opener(**kwargs):
+            spaces.append(kwargs.get("space"))
+            return FakeStore()
+
+        target = review.write_review("operations/evidence/R.md", "# R\n", root=root, open_store=opener)
+        self.assertEqual(spaces, ["architecture-docs"])
+        self.assertEqual(calls, [("operations/evidence/R.md", b"# R\n", 3)])
+        self.assertEqual(target, "store architecture-docs:operations/evidence/R.md (version 4)")
+        self.assertFalse((root / "operations").exists())
+
+    def test_a_snapshot_root_without_a_store_fails_instead_of_writing_locally(self) -> None:
+        import tempfile
+        import personal_operating_review as review
+        root = Path(tempfile.mkdtemp())
+        with self.assertRaises(SystemExit):
+            review.write_review("operations/evidence/R.md", "# R\n", root=root, open_store=lambda **_: None)
+        self.assertFalse((root / "operations").exists())
+
 if __name__ == "__main__":
     unittest.main()
