@@ -349,6 +349,14 @@ def push(directory: Path, *, reviewed: bool = False, run: Runner = _run, environ
         print("arch_store: store-mirror.yml is still in the store, so Git is still the source (SPEC-001 "
               "phase 3 cutover not done); nothing written. The cutover push deletes that file.", file=sys.stderr)
         return 2
+    links = [path for path in info["files"] if (directory / path).is_symlink()]
+    if links:
+        # The store holds files only; a symlink would otherwise drop out of the frozen set and
+        # read as a deletion of that document.
+        print("arch_store: symlinks are not documents; replace them with files. Nothing written:", file=sys.stderr)
+        for path in links[:20]:
+            print(f"  {path}", file=sys.stderr)
+        return 1
     print(f"{len(paths)} document(s) changed")
     leaks = secret_scan(directory, paths, run=run)
     if leaks:

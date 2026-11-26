@@ -315,6 +315,14 @@ class ArchStoreTest(unittest.TestCase):
         self.assertEqual(arch_store.pull(target, run=Recorder(), environ=self.env), 2)
         self.assertTrue(lock.exists())  # the other pull's lock is left alone
 
+    def test_a_symlink_is_refused_not_read_as_a_deletion(self) -> None:
+        run = Recorder()
+        copy = self.working_copy(run)
+        (copy / "docs" / "b.md").unlink()
+        (copy / "docs" / "b.md").symlink_to("a.md")
+        self.assertEqual(arch_store.push(copy, run=run, environ=self.env), 1)
+        self.assertEqual(run.ran("commit"), [])
+
     def test_push_needs_a_working_copy(self) -> None:
         plain = self.base / "plain"
         plain.mkdir()
