@@ -62,11 +62,16 @@ def find_repos(root: Path) -> list[Path]:
 REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
 
+def clean_git_env() -> dict[str, str]:
+    """The caller's environment without GIT_* variables (a hook's GIT_DIR would point every clone at one repo)."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def git_common_dir(repo: Path) -> str:
     """The git directory a clone shares with its linked worktrees; the checkout path when git cannot say."""
     try:
         out = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                             capture_output=True, text=True, timeout=10, check=False).stdout.strip()
+                             capture_output=True, text=True, timeout=10, env=clean_git_env(), check=False).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         out = ""
     return str(Path(out).resolve()) if out else str(repo.resolve())
@@ -76,7 +81,7 @@ def repo_name(repo: Path, root: Path) -> str:
     """owner/name from the origin remote; the folder layout is only a fallback (worktree names differ)."""
     try:
         url = subprocess.run(["git", "-C", str(repo), "config", "--get", "remote.origin.url"],
-                             capture_output=True, text=True, timeout=10).stdout.strip()
+                             capture_output=True, text=True, timeout=10, env=clean_git_env()).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         url = ""
     match = REMOTE_RE.search(url)

@@ -269,7 +269,10 @@ class CollectTest(unittest.TestCase):
             subprocess.run(["git", "-C", str(a), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
                             "commit", "-q", "--allow-empty", "-m", "x"], check=True)
             subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(root / "wt" / "demo-task")], check=True)
-            data = report.collect(root, TODAY)
+            import os
+            from unittest import mock
+            with mock.patch.dict(os.environ, {"GIT_DIR": str(a / ".git")}):  # as inside a git hook
+                data = report.collect(root, TODAY)
             self.assertEqual(data["missing"], ["x/demo", "x/demo"])  # both "demo" repos stay; the worktree folds into its clone
 
     def test_waiting_owner_skips_duplicate_ids(self):
