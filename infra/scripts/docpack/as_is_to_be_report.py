@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
@@ -122,11 +123,13 @@ def parse_gaps(body: str) -> list[dict] | None:
             continue
         status = cells[2].lower()
         evidence = cells[4]
+        written = status
         if status not in STATUSES:
             status = "todo"  # an unknown status never counts as progress
         if status == "done" and not evidence:
             status = "todo"
-        gaps.append({"id": cells[0], "change": cells[1], "status": status, "owner": cells[3], "evidence": evidence})
+        gaps.append({"id": cells[0], "change": cells[1], "status": status, "owner": cells[3], "evidence": evidence,
+                     "written": written})
     return gaps if in_table is True else None
 
 
@@ -203,7 +206,15 @@ def parse_doc(text: str, today: dt.date) -> dict:
         problems.append("no Gap table")
     elif not gaps:
         problems.append("Gap table has no rows")
-    if to_be is None and not any(g["status"] == "decide" for g in gaps or []):
+    unknown = sorted({g["written"] for g in gaps or [] if g["written"] not in STATUSES})
+    if unknown:
+        problems.append("Gap status not one of " + "|".join(STATUSES) + ": " + ", ".join(unknown))
+    ids = [g["id"] for g in gaps or []]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        problems.append("duplicate Gap IDs: " + ", ".join(dupes))
+    no_target = to_be is None and (not to_be_note or "ไม่มี To-Be" in to_be_note)  # a written text To-Be is a target
+    if no_target and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
     for g in gaps or []:
         if g["id"] == "G0" and (g["status"] != "done" or not g["evidence"]):
@@ -395,8 +406,8 @@ setTimeout(function () {
   });
   if (!left.length) return;
   var tag = document.createElement("script");
-  tag.src = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js";
-  tag.integrity = "sha512-6a80OTZVmEJhqYJUmYd5z8yHUCDlYnj6q9XwB/gKOEyNQV/Q8u+XeSG59a2ZKFEHGTYzgfOQKYEBtrZV7vBr+Q==";
+  tag.src = "https://cdnjs.cloudflare.com/ajax/libs/mermaid/12.3.0/mermaid.min.js";
+  tag.integrity = "sha512-CaEn6DWYJ1MM0mFAT9nvJzd3z5gPsXTM7wzprb8wx615WzTnTSrGrbKkZUqe1s24lpW27X4HlIrSFvQm/ykqZA==";
   tag.crossOrigin = "anonymous";
   tag.referrerPolicy = "no-referrer";
   tag.onload = function () {
@@ -456,10 +467,15 @@ def main() -> int:
     # The report gathers private repositories' docs: keep the files owner-only.
     for name, body in (("as-is-to-be.json", json.dumps(report, ensure_ascii=False, indent=1) + "\n"), ("index.html", render_html(report))):
         target = args.out / name
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        os.fchmod(fd, 0o600)  # also tightens a file left by an older run
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(body)
+        # A fresh 0600 file swapped in with os.replace: a reader holding the old file never sees the new data.
+        fd, tmp = tempfile.mkstemp(dir=args.out, prefix=f".{name}.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(body)
+            os.replace(tmp, target)
+        except BaseException:
+            os.unlink(tmp)
+            raise
     t = report["gap_totals"]
     print(f"{report['standard']}/{report['with_doc']} standard, {report['with_doc']}/{report['repositories']} with doc, "
           f"gaps done {t['done']}/{sum(t.values())} -> {args.out}")

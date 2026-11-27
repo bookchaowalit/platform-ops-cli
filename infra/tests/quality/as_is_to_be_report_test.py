@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|---|---|
 | G1 | a → b | done | claude | `specs/001/spec.md` |
 | G2 | b → c | Done | claude |  |
-| G3 | c → d | waiting | owner | x |
+| G3 | c → d | todo | owner | x |
 | G4 | d → e | decide | owner | owner item |
 """
 
@@ -82,7 +82,7 @@ class ParseTest(unittest.TestCase):
         self.assertIn("A --> C", doc["to_be"])
 
     def test_gap_status_rules(self):
-        gaps = {g["id"]: g["status"] for g in report.parse_doc(STANDARD, TODAY)["gaps"]}
+        gaps = {g["id"]: g["status"] for g in report.parse_doc(STANDARD.replace("| todo | owner | x |", "| waiting | owner | x |"), TODAY)["gaps"]}
         self.assertEqual(gaps, {"G1": "done", "G2": "todo", "G3": "todo", "G4": "decide"})
 
     def test_legacy_file_is_not_standard(self):
@@ -174,6 +174,16 @@ class ParseTest(unittest.TestCase):
             (hub / "repositories" / "github" / "owner" / "public" / "alpha" / ".git").mkdir(parents=True)
             data = report.collect(hub, TODAY)
             self.assertEqual(data["missing"], ["repositories/alpha"])  # no remote: falls back to the folder layout
+
+    def test_unknown_status_and_duplicate_ids_are_problems(self):
+        typo = report.parse_doc(STANDARD.replace("| todo | owner | x |", "| waiting | owner | x |"), TODAY)
+        self.assertIn("Gap status not one of done|doing|todo|blocked|decide: waiting", typo["problems"])
+        dup = report.parse_doc(STANDARD.replace("| G4 |", "| G3 |"), TODAY)
+        self.assertIn("duplicate Gap IDs: G3", dup["problems"])
+
+    def test_written_text_to_be_needs_no_decide_gap(self):
+        text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "เป้าหมายตาม PRODUCT.md: ย้ายไป shared mode").replace("| decide |", "| todo |")
+        self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(text, TODAY)["problems"])
 
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
