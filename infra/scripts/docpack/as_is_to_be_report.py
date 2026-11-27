@@ -231,12 +231,15 @@ def parse_doc(text: str, today: dt.date) -> dict:
     if dupes:
         problems.append("duplicate Gap IDs: " + ", ".join(dupes))
     # Only the contract phrase marks "no target"; any other written text To-Be is a target.
-    no_target = to_be is None and (not to_be_note or NO_TARGET in to_be_note)
+    # The phrase counts only when it opens the section; inside a written target it is a partial exception.
+    no_target = to_be is None and (not to_be_note or to_be_note.lstrip().startswith(NO_TARGET))
     if no_target and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
     for g in gaps or []:
         if g["id"] == "G0" and (g["status"] != "done" or not g["evidence"]):
             problems.append("G0 (no gap) must be done with evidence")
+    if any(g["id"] == "G0" for g in gaps or []) and len(gaps) > 1:
+        problems.append("G0 (no gap) must be the only row")
     # G0 = "no gap" marker row; a duplicated ID is ambiguous, so it stays out of the totals until fixed.
     for g in gaps or []:
         g["counted"] = g["id"] != "G0" and g["id"] not in dupes
@@ -313,10 +316,15 @@ def code_spans(value: str) -> str:
     return re.sub(r"`([^`]+)`", r"<code>\1</code>", e(value))
 
 
-def bar(counts: dict, has_rows: bool = False) -> str:
+def bar(counts: dict, gaps: list | None = None, standard: bool = True) -> str:
     total = sum(counts.values())
     if not total:
-        label = "ไม่มี Gap (As-Is ตรงกับ To-Be)" if has_rows else "ยังไม่มีตาราง Gap"
+        if not gaps:
+            label = "ยังไม่มีตาราง Gap"
+        elif standard and [g["id"] for g in gaps] == ["G0"]:
+            label = "ไม่มี Gap (As-Is ตรงกับ To-Be)"
+        else:
+            label = "ยังนับ Gap ไม่ได้: แก้ตารางก่อน"
         return f'<div class="bar empty"><span>{label}</span></div>'
     segs = "".join(
         f'<i class="s-{s}" style="flex:{counts[s]}" title="{STATUS_TH[s]} {counts[s]}"></i>' for s in STATUSES if counts[s]
@@ -359,7 +367,7 @@ def render_system(s: dict) -> str:
   <summary>
     <div class="sh"><h2>{e(s["repo"].split("/")[-1])}</h2><span class="owner mono">{e(s["repo"])}</span></div>
     <div class="meta">{fresh}{std}<span class="done mono">{done}</span></div>
-    {bar(counts, bool(s["gaps"]))}
+    {bar(counts, s["gaps"], s["standard"])}
   </summary>
   <p class="intro">{code_spans(s["summary"])}</p>
   {f'<ul class="probs">{problems}</ul>' if problems else ''}
@@ -374,12 +382,12 @@ def render_system(s: dict) -> str:
 
 CSS = """
 :root{--bg:#f4f6f9;--panel:#ffffff;--fg:#17202b;--muted:#5b6675;--line:#d9dee6;--accent:#2f5bd3;
---done:#26774b;--chip-fg:#ffffff;--doing:#2f5bd3;--todo:#9aa4b2;--blocked:#c8463d;--decide:#c58a12;
+--done:#26774b;--chip-fg:#ffffff;--doing:#2f5bd3;--todo:#9aa4b2;--blocked:#c8463d;--decide:#c58a12;--decide-text:#8a5a00;
 --sans:"IBM Plex Sans Thai","Noto Sans Thai",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#11161d;--panel:#18202a;--fg:#e6ebf2;--muted:#9aa6b6;--line:#2a3442;--accent:#7f9ef0;
---done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;--chip-fg:#10151c;color-scheme:dark}}
+--done:#4fb37f;--doing:#7f9ef0;--todo:#8a95a5;--blocked:#e2665c;--decide:#e0a93a;--decide-text:#e0a93a;--chip-fg:#10151c;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#11161d;--panel:#18202a;--fg:#e6ebf2;--muted:#9aa6b6;--line:#2a3442;--accent:#7f9ef0;
---done:#4fb37f;--doing:#7f9ef0;--todo:#6d7888;--blocked:#e2665c;--decide:#e0a93a;--chip-fg:#10151c;color-scheme:dark}
+--done:#4fb37f;--doing:#7f9ef0;--todo:#8a95a5;--blocked:#e2665c;--decide:#e0a93a;--decide-text:#e0a93a;--chip-fg:#10151c;color-scheme:dark}
 body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:15px;line-height:1.6}
 .wrap{max-width:1240px;margin:0 auto;padding-block:28px 64px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:18px}
 header{display:grid;gap:6px}
@@ -404,7 +412,7 @@ code{background:color-mix(in srgb,var(--accent) 9%,transparent);padding:0 .3em;b
 h2{font-size:1.15rem;margin:0}.owner{color:var(--muted)}
 .meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .pill{font-size:.78rem;padding:1px 8px;border-radius:999px;border:1px solid var(--line)}
-.pill.ok{color:var(--done);border-color:currentColor}.pill.warn{color:var(--decide);border-color:currentColor}.pill.off{color:var(--blocked);border-color:currentColor}
+.pill.ok{color:var(--done);border-color:currentColor}.pill.warn{color:var(--decide-text);border-color:currentColor}.pill.off{color:var(--blocked);border-color:currentColor}
 .done{color:var(--muted)}
 .sys>*:not(summary){margin-left:18px;margin-right:18px}
 .intro{color:var(--muted);max-width:90ch}

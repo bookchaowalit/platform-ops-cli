@@ -197,6 +197,21 @@ class ParseTest(unittest.TestCase):
         mixed = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ยังไม่มี To-Be diagram แต่เป้าหมายคือย้ายไป shared mode").replace("| decide |", "| todo |")
         self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(mixed, TODAY)["problems"])
 
+    def test_phrase_inside_a_written_target_is_not_no_target(self):
+        part = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "เป้าหมาย: ย้ายไป shared mode; ส่วน billing ไม่มี To-Be ที่เขียนไว้").replace("| decide |", "| todo |")
+        self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(part, TODAY)["problems"])
+
+    def test_g0_must_be_the_only_row(self):
+        mixed = STANDARD.replace("| G1 |", "| G0 |")
+        self.assertIn("G0 (no gap) must be the only row", report.parse_doc(mixed, TODAY)["problems"])
+
+    def test_bar_says_uncountable_when_all_rows_are_dropped(self):
+        rows = [{"id": "G1"}, {"id": "G1"}]
+        zero = {s: 0 for s in report.STATUSES}
+        self.assertIn("ยังนับ Gap ไม่ได้", report.bar(zero, rows, False))
+        self.assertIn("ไม่มี Gap", report.bar(zero, [{"id": "G0"}], True))
+        self.assertIn("ยังไม่มีตาราง Gap", report.bar(zero, [], False))
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])
