@@ -289,10 +289,11 @@ class CollectTest(unittest.TestCase):
             b = root / "x" / "two" / "demo"  # same fallback name
             for repo in (a, b):
                 repo.mkdir(parents=True)
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True, env=report.clean_git_env())
             subprocess.run(["git", "-C", str(a), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-                            "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
-            subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(root / "wt" / "demo-task")], check=True)
+                            "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"], check=True, env=report.clean_git_env())
+            subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(root / "wt" / "demo-task")], check=True,
+                           env=report.clean_git_env())
             import os
             from unittest import mock
             with mock.patch.dict(os.environ, {"GIT_DIR": str(a / ".git")}):  # as inside a git hook
@@ -306,14 +307,14 @@ class CollectTest(unittest.TestCase):
             main, spare = root / "a" / "public" / "demo", root / "b" / "backup" / "demo-copy"
             for repo in (main, spare):
                 repo.mkdir(parents=True)
-                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True, env=report.clean_git_env())
                 subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
-                                "git@github.com:owner/demo.git" if repo is main else "https://github.com/owner/demo"], check=True)
+                                "git@github.com:owner/demo.git" if repo is main else "https://github.com/owner/demo"], check=True, env=report.clean_git_env())
                 (repo / "docs" / "diagrams").mkdir(parents=True)
                 (repo / "docs" / "diagrams" / "01-business-process.md").write_text(STANDARD, encoding="utf-8")
             other = root / "a" / "public" / "other"
             other.mkdir(parents=True)
-            subprocess.run(["git", "init", "-q", str(other)], check=True)  # no origin: keyed by its git dir
+            subprocess.run(["git", "init", "-q", str(other)], check=True, env=report.clean_git_env())  # no origin: keyed by its git dir
             data = report.collect(root, TODAY)
             self.assertEqual(data["repositories"], 2)
             self.assertEqual([s["repo"] for s in data["systems"]], ["owner/demo"])
@@ -328,12 +329,12 @@ class CollectTest(unittest.TestCase):
             clone, tree = root / "a" / "public" / "demo", root / "wt" / "demo-task"
             clone.mkdir(parents=True)
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
-            subprocess.run(["git", "init", "-q", str(clone)], check=True)
-            subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", "https://github.com/owner/demo"], check=True)
-            subprocess.run([*git, "-C", str(clone), "commit", "-q", "--allow-empty", "-m", "x"], check=True)
-            subprocess.run(["git", "-C", str(clone), "worktree", "add", "-q", str(tree)], check=True)
-            subprocess.run(["git", "-C", str(clone), "config", "extensions.worktreeConfig", "true"], check=True)
-            subprocess.run(["git", "-C", str(tree), "config", "--worktree", "remote.origin.url", "gh-alias:owner/demo"], check=True)
+            subprocess.run(["git", "init", "-q", str(clone)], check=True, env=report.clean_git_env())
+            subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", "https://github.com/owner/demo"], check=True, env=report.clean_git_env())
+            subprocess.run([*git, "-C", str(clone), "commit", "-q", "--allow-empty", "-m", "x"], check=True, env=report.clean_git_env())
+            subprocess.run(["git", "-C", str(clone), "worktree", "add", "-q", str(tree)], check=True, env=report.clean_git_env())
+            subprocess.run(["git", "-C", str(clone), "config", "extensions.worktreeConfig", "true"], check=True, env=report.clean_git_env())
+            subprocess.run(["git", "-C", str(tree), "config", "--worktree", "remote.origin.url", "gh-alias:owner/demo"], check=True, env=report.clean_git_env())
             data = report.collect(root, TODAY)
             self.assertEqual(data["repositories"], 1)
             self.assertEqual(data["missing"], ["owner/demo"])
