@@ -151,6 +151,26 @@ class OfflineDiaryTest(unittest.TestCase):
         self.assertNotIn("functions", rows[0])
         self.assertIn("functions not recorded", err.getvalue())
 
+    def test_unreadable_or_broken_registry_keeps_the_summary(self) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "scripts" / "workflows"))
+        import daily_diary
+        import yaml
+
+        for error in (PermissionError("denied"), yaml.YAMLError("bad"), KeyError("functions"), UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")):
+            def broken(*args, error=error, **kwargs):
+                raise error
+
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as tmp, \
+                    patch.dict(os.environ, {"SOLO_DIARY_STORE": "off"}), \
+                    patch.object(daily_diary, "load_function_ids", broken), \
+                    redirect_stderr(io.StringIO()) as err:
+                result = daily_diary.record_conversation_summary(
+                    day="2026-11-27", topic="broken", question_summary="q", outcome_summary="o",
+                    functions="build-creation", entries_root=tmp,
+                )
+                self.assertEqual(result["status"], "recorded")
+                self.assertIn("functions not recorded", err.getvalue())
+
     def test_unknown_function_still_fails(self) -> None:
         sys.path.insert(0, str(REPO_ROOT / "scripts" / "workflows"))
         import daily_diary

@@ -19,6 +19,8 @@ import hashlib
 import json
 import subprocess
 import sys
+
+import yaml
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -200,9 +202,11 @@ def record_conversation_summary(
     if functions:
         try:
             valid = load_function_ids()
-        except (FileNotFoundError, StoreUnavailable) as exc:
-            # Offline with no local registry copy: keep the summary rather than lose the entry.
-            print(f"diary: functions not recorded, role registry unavailable ({exc})", file=sys.stderr)
+        except (OSError, StoreUnavailable, yaml.YAMLError, KeyError, TypeError, ValueError) as exc:
+            # Missing, unreadable or broken registry: keep the summary rather than lose the entry.
+            # An unknown function ID is still refused below, once the registry loaded.
+            reason = str(exc) if isinstance(exc, (FileNotFoundError, StoreUnavailable)) else type(exc).__name__
+            print(f"diary: functions not recorded, role registry unavailable ({reason})", file=sys.stderr)
         else:
             function_ids = parse_functions(functions, valid)
 

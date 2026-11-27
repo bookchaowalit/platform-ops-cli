@@ -243,7 +243,9 @@ def parse_doc(text: str, today: dt.date) -> dict:
         problems.append("duplicate Gap IDs: " + ", ".join(dupes))
     # Only the contract phrase marks "no target"; any other written text To-Be is a target.
     # The phrase counts only when it opens the section; inside a written target it is a partial exception.
-    no_target = to_be is None and (not to_be_note or to_be_note.lstrip().startswith(NO_TARGET))
+    # The phrase must open the section; Markdown emphasis/quote/list marks before it do not count as text.
+    opening = re.sub(r"^[\s*_>~`#-]+", "", to_be_note or "")
+    no_target = to_be is None and (not to_be_note or opening.startswith(NO_TARGET))
     if no_target and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
     for g in gaps or []:
@@ -279,11 +281,21 @@ def collect(root: Path, today: dt.date) -> dict:
     # its shared git directory, so two different repositories with the same fallback name both stay.
     # The clone wins over a worktree (its `.git` is a folder; a worktree's is a file), else the first by path.
     # A worktree given alone as --root still counts.
-    chosen: dict[str, tuple[str, Path]] = {}
+    # Two passes: checkouts sharing a git directory fold first (a worktree may set its own origin alias),
+    # then the survivors fold by GitHub origin.
+    def better(repo: Path, current: Path | None) -> bool:
+        return current is None or ((repo / ".git").is_dir() and not (current / ".git").is_dir())
+
+    by_gitdir: dict[str, Path] = {}
     for repo in find_repos(root):
+        key = git_common_dir(repo)
+        if better(repo, by_gitdir.get(key)):
+            by_gitdir[key] = repo
+    chosen: dict[str, tuple[str, Path]] = {}
+    for gitdir, repo in sorted(by_gitdir.items(), key=lambda item: str(item[1])):
         named = origin_name(repo)
-        key = f"origin:{named.lower()}" if named else f"gitdir:{git_common_dir(repo)}"
-        if key not in chosen or ((repo / ".git").is_dir() and not (chosen[key][1] / ".git").is_dir()):
+        key = f"origin:{named.lower()}" if named else f"gitdir:{gitdir}"
+        if key not in chosen or better(repo, chosen[key][1]):
             chosen[key] = (repo_name(repo, root), repo)
     for name, repo in sorted(chosen.values(), key=lambda item: str(item[1])):
         record = {"repo": name, "path": str(repo.relative_to(root)) if repo != root else repo.name}
@@ -381,7 +393,7 @@ def render_system(s: dict) -> str:
   <summary>
     <div class="sh"><h2>{e(s["repo"].split("/")[-1])}</h2><span class="owner mono">{e(s["repo"])}</span></div>
     <div class="meta">{fresh}{std}<span class="done mono">{done}</span></div>
-    {bar(counts, s["gaps"], s["standard"])}
+    {bar(counts, s["gaps"], not any(not p.startswith("stale") for p in s["problems"]))}
   </summary>
   <p class="intro">{code_spans(s["summary"])}</p>
   {f'<ul class="probs">{problems}</ul>' if problems else ''}

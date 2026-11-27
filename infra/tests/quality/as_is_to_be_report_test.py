@@ -193,6 +193,21 @@ class ParseTest(unittest.TestCase):
         future = report.parse_doc(STANDARD.replace("2026-11-20", "2027-11-20"), TODAY)
         self.assertIn("Last reviewed date 2027-11-20 is in the future", future["problems"])
 
+    def test_bold_no_target_phrase_still_needs_a_decide_gap(self):
+        for marked in ("**ไม่มี To-Be ที่เขียนไว้** รอ owner", "_ไม่มี To-Be ที่เขียนไว้_", "> ไม่มี To-Be ที่เขียนไว้"):
+            text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", marked).replace("| decide |", "| todo |")
+            self.assertIn("no To-Be and no decide gap asking the owner for one",
+                          report.parse_doc(text, TODAY)["problems"], marked)
+
+    def test_stale_g0_doc_still_says_no_gap(self):
+        table = STANDARD.split("## Gap")[1].split("| G1 |")[0]
+        text = STANDARD.split("## Gap")[0] + "## Gap" + table + "| G0 | ไม่มี gap | done | owner | spec |\n"
+        doc = report.parse_doc(text.replace("2026-11-20", "2026-09-01"), TODAY)
+        self.assertFalse(doc["standard"])  # stale still fails the standard
+        page = report.render_system({"repo": "o/r", "path": "r", **doc})
+        self.assertIn("ไม่มี Gap (As-Is ตรงกับ To-Be)", page)
+        self.assertNotIn("แก้ตารางก่อน", page)
+
     def test_only_the_contract_phrase_means_no_target(self):
         mixed = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ยังไม่มี To-Be diagram แต่เป้าหมายคือย้ายไป shared mode").replace("| decide |", "| todo |")
         self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(mixed, TODAY)["problems"])
@@ -296,6 +311,23 @@ class CollectTest(unittest.TestCase):
             self.assertEqual(data["systems"][0]["path"], "a/public/demo")  # first by path wins
             self.assertEqual(data["gap_totals"]["done"], 1)  # not doubled
             self.assertEqual(data["waiting_owner"], 1)
+
+    def test_worktree_with_its_own_origin_alias_folds_into_its_clone(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clone, tree = root / "a" / "public" / "demo", root / "wt" / "demo-task"
+            clone.mkdir(parents=True)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"]
+            subprocess.run(["git", "init", "-q", str(clone)], check=True)
+            subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", "https://github.com/owner/demo"], check=True)
+            subprocess.run([*git, "-C", str(clone), "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run(["git", "-C", str(clone), "worktree", "add", "-q", str(tree)], check=True)
+            subprocess.run(["git", "-C", str(clone), "config", "extensions.worktreeConfig", "true"], check=True)
+            subprocess.run(["git", "-C", str(tree), "config", "--worktree", "remote.origin.url", "gh-alias:owner/demo"], check=True)
+            data = report.collect(root, TODAY)
+            self.assertEqual(data["repositories"], 1)
+            self.assertEqual(data["missing"], ["owner/demo"])
 
     def test_waiting_owner_skips_duplicate_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
