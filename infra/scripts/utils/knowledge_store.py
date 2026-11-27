@@ -74,12 +74,15 @@ def _https_origin(value: str, name: str) -> str:
     return value.rstrip("/")
 
 
-def settings(environ: Any = None) -> tuple[str, str] | None:
-    """(api_url, issuer) when the store is configured and enabled, else None."""
+def settings(environ: Any = None, *, diary: bool = True) -> tuple[str, str] | None:
+    """(api_url, issuer) when the store is configured and enabled, else None.
+
+    ``SOLO_DIARY_STORE=off`` keeps the diary local; readers of other spaces pass ``diary=False``.
+    """
     environ = os.environ if environ is None else environ
     file_values = _client_file(environ)
     switch = (environ.get("SOLO_DIARY_STORE") or file_values.get("SOLO_DIARY_STORE") or "").strip().lower()
-    if switch in {"off", "0", "false"}:
+    if diary and switch in {"off", "0", "false"}:
         return None
     api = (environ.get("EMPIRE_KNOWLEDGE_API") or "").strip() or file_values.get("EMPIRE_KNOWLEDGE_API", "")
     issuer = (environ.get("SOLO_WEB_PUBLIC_ORIGIN") or "").strip() or file_values.get("SOLO_WEB_PUBLIC_ORIGIN", "")
@@ -190,6 +193,6 @@ class KnowledgeStore:
         return int(result["document"]["version"])
 
 
-def open_store(environ: Any = None) -> KnowledgeStore | None:
-    configured = settings(environ)
-    return KnowledgeStore(*configured) if configured else None
+def open_store(environ: Any = None, *, space: str = "knowledge-base", diary: bool = True) -> KnowledgeStore | None:
+    configured = settings(environ, diary=diary)
+    return KnowledgeStore(*configured, space=space) if configured else None

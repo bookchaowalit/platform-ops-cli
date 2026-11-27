@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 from datetime import date, timedelta
@@ -30,22 +31,52 @@ for _stream in (sys.stdout, sys.stderr):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _env import KNOWLEDGE_ROOT, sibling_repo_root  # noqa: E402
+from knowledge_store import open_store  # noqa: E402
 
-# The role registries live in bookchaowalit/architecture-docs (override SOLO_ARCHITECTURE_ROOT);
-# diary entries live in the knowledge-base checkout (SOLO_KNOWLEDGE_ROOT).
+# The role registries live in the hosted store, space architecture-docs (SPEC-001 D3, 2026-11-26).
+# A local copy (an architecture-docs checkout or an `arch_store.py pull` working copy pointed to by
+# SOLO_ARCHITECTURE_ROOT) wins when it has the file; diary entries live in the knowledge-base
+# checkout (SOLO_KNOWLEDGE_ROOT).
 ARCHITECTURE_ROOT = sibling_repo_root("architecture-docs")
+ARCHITECTURE_SPACE = "architecture-docs"
+REGISTRIES = "docs/registries"
+CLASSIFICATIONS_NAME = "ROLE-CLASSIFICATIONS.yaml"
+ALIGNMENT_NAME = "ROLE-ECONOMIC-ALIGNMENT.yaml"
 
-ROLE_CLASSIFICATIONS = ARCHITECTURE_ROOT / "docs" / "registries" / "ROLE-CLASSIFICATIONS.yaml"
-ROLE_ECONOMIC_ALIGNMENT = ARCHITECTURE_ROOT / "docs" / "registries" / "ROLE-ECONOMIC-ALIGNMENT.yaml"
+ROLE_CLASSIFICATIONS = ARCHITECTURE_ROOT / REGISTRIES / CLASSIFICATIONS_NAME
+ROLE_ECONOMIC_ALIGNMENT = ARCHITECTURE_ROOT / REGISTRIES / ALIGNMENT_NAME
 DEFAULT_ENTRIES_ROOT = KNOWLEDGE_ROOT / "diary" / "entries"
 CONVERSATION_FILENAME = "conversation-summaries.json"
 DRIFT_THRESHOLD = 15
 TAG_PREFIX = "function:"
 
 
-def load_function_ids(path: Path = ROLE_CLASSIFICATIONS) -> list[str]:
+@functools.lru_cache(maxsize=None)
+def _store_registry(name: str) -> str:
+    """One registry document from the architecture-docs store space, read once per process."""
+    store = open_store(space=ARCHITECTURE_SPACE, diary=False)
+    if store is None:
+        raise FileNotFoundError(
+            f"{REGISTRIES}/{name}: no local architecture-docs copy and the knowledge store is not "
+            "configured (EMPIRE_KNOWLEDGE_API + SOLO_WEB_PUBLIC_ORIGIN, env or client.env)"
+        )
+    found = store.get(f"{REGISTRIES}/{name}")
+    if found is None:
+        raise FileNotFoundError(f"{REGISTRIES}/{name} is not in store space {ARCHITECTURE_SPACE}")
+    return found[0].decode("utf-8")
+
+
+def _registry(name: str, path: Path | None) -> Any:
+    """An explicit path is read as given; otherwise a local copy, else the store."""
+    local = path if path is not None else ARCHITECTURE_ROOT / REGISTRIES / name
+    if path is not None or local.is_file():
+        return yaml.safe_load(local.read_text(encoding="utf-8"))
+    return yaml.safe_load(_store_registry(name))
+
+
+def load_function_ids(path: Path | None = None) -> list[str]:
     """Return function IDs in registry order."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = _registry(CLASSIFICATIONS_NAME, path)
     return [row["id"] for row in data["functions"]]
 
 
@@ -67,9 +98,9 @@ def parse_functions(value: str | list[str] | None, valid: list[str] | None = Non
     return result
 
 
-def load_stage(stage_id: str | None, path: Path = ROLE_ECONOMIC_ALIGNMENT) -> dict[str, Any]:
+def load_stage(stage_id: str | None, path: Path | None = None) -> dict[str, Any]:
     """Return the requested rotation stage, defaulting to the active stage."""
-    rotation = yaml.safe_load(path.read_text(encoding="utf-8"))["function_rotation"]
+    rotation = _registry(ALIGNMENT_NAME, path)["function_rotation"]
     stages = rotation["stages"]
     stage_id = stage_id or rotation.get("active_stage") or stages[0]["id"]
     for stage in stages:
