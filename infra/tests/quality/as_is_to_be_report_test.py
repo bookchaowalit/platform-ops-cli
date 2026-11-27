@@ -193,6 +193,10 @@ class ParseTest(unittest.TestCase):
         future = report.parse_doc(STANDARD.replace("2026-11-20", "2027-11-20"), TODAY)
         self.assertIn("Last reviewed date 2027-11-20 is in the future", future["problems"])
 
+    def test_only_the_contract_phrase_means_no_target(self):
+        mixed = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ยังไม่มี To-Be diagram แต่เป้าหมายคือย้ายไป shared mode").replace("| decide |", "| todo |")
+        self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(mixed, TODAY)["problems"])
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])
@@ -237,6 +241,30 @@ class CollectTest(unittest.TestCase):
             self.assertIn('<pre class="mermaid">', page)
             self.assertIn("&lt;b&gt;today&lt;/b&gt;", page)  # diagram text is escaped
             self.assertNotIn("<b>today</b>", page)
+
+    def test_same_fallback_name_keeps_both_and_worktree_counts_once(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = root / "x" / "one" / "demo"  # fallback name x/demo
+            b = root / "x" / "two" / "demo"  # same fallback name
+            for repo in (a, b):
+                repo.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(a), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(root / "wt" / "demo-task")], check=True)
+            data = report.collect(root, TODAY)
+            self.assertEqual(data["missing"], ["x/demo", "x/demo"])  # both "demo" repos stay; the worktree folds into its clone
+
+    def test_waiting_owner_skips_duplicate_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "solo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "docs" / "diagrams").mkdir(parents=True)
+            text = STANDARD.replace("| G3 | c → d | todo |", "| G4 | c → d | decide |")
+            (repo / "docs" / "diagrams" / "01-business-process.md").write_text(text, encoding="utf-8")
+            self.assertEqual(report.collect(repo, TODAY)["waiting_owner"], 0)
 
 
 if __name__ == "__main__":

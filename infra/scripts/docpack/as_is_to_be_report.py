@@ -33,6 +33,7 @@ DEFAULT_OUT = PROJECT_ROOT / "data" / "generated" / "as-is-to-be"
 DOC = Path("docs") / "diagrams" / "01-business-process.md"
 SKIP_DIRS = {"node_modules", ".git", ".next", "dist", "build", ".venv", "venv", "__pycache__", "vendor", ".turbo", "coverage"}
 STATUSES = ("done", "doing", "todo", "blocked", "decide")
+NO_TARGET = "ไม่มี To-Be ที่เขียนไว้"
 STALE_DAYS = 30
 
 REVIEWED_RE = re.compile(r"^Last reviewed:\s*(\d{4}-\d{2}-\d{2})(?:.*?commit\s+`([0-9a-f]{6,40})`)?", re.M)
@@ -59,6 +60,16 @@ def find_repos(root: Path) -> list[Path]:
 
 
 REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def git_common_dir(repo: Path) -> str:
+    """The git directory a clone shares with its linked worktrees; the checkout path when git cannot say."""
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=10, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    return str(Path(out).resolve()) if out else str(repo.resolve())
 
 
 def repo_name(repo: Path, root: Path) -> str:
@@ -219,14 +230,17 @@ def parse_doc(text: str, today: dt.date) -> dict:
     dupes = sorted({i for i in ids if ids.count(i) > 1})
     if dupes:
         problems.append("duplicate Gap IDs: " + ", ".join(dupes))
-    no_target = to_be is None and (not to_be_note or "ไม่มี To-Be" in to_be_note)  # a written text To-Be is a target
+    # Only the contract phrase marks "no target"; any other written text To-Be is a target.
+    no_target = to_be is None and (not to_be_note or NO_TARGET in to_be_note)
     if no_target and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
     for g in gaps or []:
         if g["id"] == "G0" and (g["status"] != "done" or not g["evidence"]):
             problems.append("G0 (no gap) must be done with evidence")
     # G0 = "no gap" marker row; a duplicated ID is ambiguous, so it stays out of the totals until fixed.
-    real_gaps = [g for g in gaps or [] if g["id"] != "G0" and g["id"] not in dupes]
+    for g in gaps or []:
+        g["counted"] = g["id"] != "G0" and g["id"] not in dupes
+    real_gaps = [g for g in gaps or [] if g["counted"]]
     counts = {s: sum(1 for g in real_gaps if g["status"] == s) for s in STATUSES}
     return {
         "summary": intro(text),
@@ -248,12 +262,13 @@ def collect(root: Path, today: dt.date) -> dict:
     systems, missing = [], []
     # A clone and its linked worktrees share one origin: count the repository once, preferring the clone
     # (its `.git` is a folder; a worktree's is a file). A worktree given alone as --root still counts.
-    chosen: dict[str, Path] = {}
+    # Keyed by the shared git directory, so two different repositories with the same fallback name both stay.
+    chosen: dict[str, tuple[str, Path]] = {}
     for repo in find_repos(root):
-        name = repo_name(repo, root)
-        if name not in chosen or ((repo / ".git").is_dir() and not (chosen[name] / ".git").is_dir()):
-            chosen[name] = repo
-    for name, repo in sorted(chosen.items(), key=lambda item: str(item[1])):
+        key = git_common_dir(repo)
+        if key not in chosen or ((repo / ".git").is_dir() and not (chosen[key][1] / ".git").is_dir()):
+            chosen[key] = (repo_name(repo, root), repo)
+    for name, repo in sorted(chosen.values(), key=lambda item: str(item[1])):
         record = {"repo": name, "path": str(repo.relative_to(root)) if repo != root else repo.name}
         doc = repo / DOC
         # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
@@ -272,7 +287,7 @@ def collect(root: Path, today: dt.date) -> dict:
     totals = {s: sum(x["gap_counts"][s] for x in systems) for s in STATUSES}
     waiting_owner = sum(
         1 for x in systems for g in x["gaps"]
-        if g["status"] == "decide" or (g["status"] == "blocked" and g["owner"].lower() == "owner")
+        if g.get("counted") and (g["status"] == "decide" or (g["status"] == "blocked" and g["owner"].lower() == "owner"))
     )
     return {
         "generated_on": today.isoformat(),
