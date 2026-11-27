@@ -7,12 +7,13 @@ architecture-docs moved into the hosted store (SPEC-001 D3, 2026-11-26), so `tas
 
 from __future__ import annotations
 
-import importlib
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -118,17 +119,50 @@ class SnapshotLookupTest(unittest.TestCase):
             (snapshot / "docs" / "registries" / "ROLE-CLASSIFICATIONS.yaml").write_bytes(CLASSIFICATIONS)
             env = {key: value for key, value in os.environ.items() if key != "SOLO_ARCHITECTURE_ROOT"}
             env["SOLO_ARCHITECTURE_SNAPSHOT"] = str(snapshot)
-            import _env
-            try:
-                with patch.dict(os.environ, env, clear=True):
-                    importlib.reload(_env)
-                    module = importlib.reload(function_share)
-                    module._store_registry.cache_clear()
-                    with patch.object(module, "open_store", lambda *a, **k: self.fail("store must not be called")):
-                        self.assertEqual(module.load_function_ids(), ["build-creation", "operations-execution"])
-            finally:
-                importlib.reload(_env)
-                importlib.reload(function_share)
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(function_share, "ARCHITECTURE_ROOT", None), \
+                    patch.object(function_share, "sibling_repo_root", lambda repo: snapshot.parent / "none"), \
+                    patch.object(function_share, "open_store", lambda *a, **k: self.fail("store must not be called")):
+                # No reload: the roots are resolved per call, and reloading _env would run
+                # load_env() and bring back a SOLO_ARCHITECTURE_ROOT from infra/.env.
+                self.assertEqual(function_share.load_function_ids(), ["build-creation", "operations-execution"])
+
+
+class OfflineDiaryTest(unittest.TestCase):
+    """An unreadable registry keeps the summary (without tags) instead of losing the entry."""
+
+    def test_summary_is_kept_without_tags_when_the_registry_is_unavailable(self) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "scripts" / "workflows"))
+        import daily_diary
+
+        def unavailable(*args, **kwargs):
+            raise knowledge_store.StoreUnavailable("unreachable")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"SOLO_DIARY_STORE": "off"}), \
+                patch.object(daily_diary, "load_function_ids", unavailable), \
+                redirect_stderr(io.StringIO()) as err:
+            result = daily_diary.record_conversation_summary(
+                day="2026-11-27", topic="offline", question_summary="q", outcome_summary="o",
+                functions="build-creation", entries_root=tmp,
+            )
+            rows = json.loads((Path(tmp) / "2026" / "11" / "27" / "conversation-summaries.json").read_text())
+        self.assertEqual(result["status"], "recorded")
+        self.assertNotIn("functions", rows[0])
+        self.assertIn("functions not recorded", err.getvalue())
+
+    def test_unknown_function_still_fails(self) -> None:
+        sys.path.insert(0, str(REPO_ROOT / "scripts" / "workflows"))
+        import daily_diary
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"SOLO_DIARY_STORE": "off"}), \
+                patch.object(daily_diary, "load_function_ids", lambda *a, **k: ["build-creation"]):
+            with self.assertRaises(ValueError):
+                daily_diary.record_conversation_summary(
+                    day="2026-11-27", topic="offline", question_summary="q", outcome_summary="o",
+                    functions="no-such-function", entries_root=tmp,
+                )
 
 
 class LookupOrderTest(unittest.TestCase):
