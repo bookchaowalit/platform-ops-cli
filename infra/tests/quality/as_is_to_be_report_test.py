@@ -185,6 +185,14 @@ class ParseTest(unittest.TestCase):
         text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "เป้าหมายตาม PRODUCT.md: ย้ายไป shared mode").replace("| decide |", "| todo |")
         self.assertNotIn("no To-Be and no decide gap asking the owner for one", report.parse_doc(text, TODAY)["problems"])
 
+    def test_rows_without_outer_pipes_dupes_and_future_date(self):
+        bare = STANDARD.replace("| G4 | d → e | decide | owner | owner item |", "G4 | d → e | decide | owner | owner item")
+        self.assertEqual([g["id"] for g in report.parse_doc(bare, TODAY)["gaps"]], ["G1", "G2", "G3", "G4"])
+        dup = report.parse_doc(STANDARD.replace("| G2 |", "| G1 |"), TODAY)
+        self.assertEqual(sum(dup["gap_counts"].values()), 2)  # both G1 rows left out of the totals
+        future = report.parse_doc(STANDARD.replace("2026-11-20", "2027-11-20"), TODAY)
+        self.assertIn("Last reviewed date 2027-11-20 is in the future", future["problems"])
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])

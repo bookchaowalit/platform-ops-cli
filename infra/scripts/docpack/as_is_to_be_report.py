@@ -97,9 +97,13 @@ def parse_gaps(body: str) -> list[dict] | None:
     in_table = False
     for line in body.splitlines():
         if not line.strip().startswith("|"):
-            if in_table:
+            # Outer pipes are optional in Markdown: inside the table a line with a pipe is still a row.
+            if in_table is True and line.strip() and "|" in line:
+                pass
+            elif in_table:
                 break
-            continue
+            else:
+                continue
         if not in_table:
             head = [c.strip().lower() for c in line.strip().strip("|").split("|")]
             if head == GAP_HEADER:
@@ -185,6 +189,8 @@ def parse_doc(text: str, today: dt.date) -> dict:
         except ValueError:
             problems.append(f"invalid Last reviewed date {reviewed_on}")
             reviewed_on = None
+        if age is not None and age < 0:
+            problems.append(f"Last reviewed date {reviewed_on} is in the future")
     else:  # no line at all (an invalid date is reported above)
         problems.append("no Last reviewed line")
     if reviewed is not None and reviewed_on is not None and not reviewed.group(2):
@@ -219,7 +225,8 @@ def parse_doc(text: str, today: dt.date) -> dict:
     for g in gaps or []:
         if g["id"] == "G0" and (g["status"] != "done" or not g["evidence"]):
             problems.append("G0 (no gap) must be done with evidence")
-    real_gaps = [g for g in gaps or [] if g["id"] != "G0"]  # G0 = "no gap" marker row
+    # G0 = "no gap" marker row; a duplicated ID is ambiguous, so it stays out of the totals until fixed.
+    real_gaps = [g for g in gaps or [] if g["id"] != "G0" and g["id"] not in dupes]
     counts = {s: sum(1 for g in real_gaps if g["status"] == s) for s in STATUSES}
     return {
         "summary": intro(text),
@@ -239,8 +246,15 @@ def parse_doc(text: str, today: dt.date) -> dict:
 def collect(root: Path, today: dt.date) -> dict:
     root = root.resolve()
     systems, missing = [], []
+    # A clone and its linked worktrees share one origin: count the repository once, preferring the clone
+    # (its `.git` is a folder; a worktree's is a file). A worktree given alone as --root still counts.
+    chosen: dict[str, Path] = {}
     for repo in find_repos(root):
-        record = {"repo": repo_name(repo, root), "path": str(repo.relative_to(root)) if repo != root else repo.name}
+        name = repo_name(repo, root)
+        if name not in chosen or ((repo / ".git").is_dir() and not (chosen[name] / ".git").is_dir()):
+            chosen[name] = repo
+    for name, repo in sorted(chosen.items(), key=lambda item: str(item[1])):
+        record = {"repo": name, "path": str(repo.relative_to(root)) if repo != root else repo.name}
         doc = repo / DOC
         # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
         chain = [repo / "docs", repo / "docs" / "diagrams", doc]
