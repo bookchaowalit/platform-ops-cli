@@ -30,14 +30,13 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _env import KNOWLEDGE_ROOT, sibling_repo_root  # noqa: E402
+from _env import ARCHITECTURE_ROOT, KNOWLEDGE_ROOT  # noqa: E402
 from knowledge_store import open_store  # noqa: E402
 
 # The role registries live in the hosted store, space architecture-docs (SPEC-001 D3, 2026-11-26).
-# A local copy (an architecture-docs checkout or an `arch_store.py pull` working copy pointed to by
-# SOLO_ARCHITECTURE_ROOT) wins when it has the file; diary entries live in the knowledge-base
-# checkout (SOLO_KNOWLEDGE_ROOT).
-ARCHITECTURE_ROOT = sibling_repo_root("architecture-docs")
+# A local copy wins when it has the file, found as `_env.architecture_root()` finds it:
+# SOLO_ARCHITECTURE_ROOT, else the hub's snapshot of the store space, else a checkout. Only then is
+# the store called. Diary entries live in the knowledge-base checkout (SOLO_KNOWLEDGE_ROOT).
 ARCHITECTURE_SPACE = "architecture-docs"
 REGISTRIES = "docs/registries"
 CLASSIFICATIONS_NAME = "ROLE-CLASSIFICATIONS.yaml"

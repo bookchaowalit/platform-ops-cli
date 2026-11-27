@@ -7,6 +7,9 @@ architecture-docs moved into the hosted store (SPEC-001 D3, 2026-11-26), so `tas
 
 from __future__ import annotations
 
+import importlib
+import json
+import os
 import sys
 import tempfile
 import unittest
@@ -102,6 +105,30 @@ class RegistryFromStoreTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError) as caught:
                 function_share.load_function_ids()
         self.assertIn("architecture-docs", str(caught.exception))
+
+
+class SnapshotLookupTest(unittest.TestCase):
+    """Without SOLO_ARCHITECTURE_ROOT, the hub's local snapshot of the store space is used offline."""
+
+    def test_snapshot_is_read_before_the_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "architecture-docs"
+            (snapshot / "docs" / "registries").mkdir(parents=True)
+            (snapshot / ".snapshot.json").write_text(json.dumps({"taken_at": "2999-01-01T00:00:00Z"}))
+            (snapshot / "docs" / "registries" / "ROLE-CLASSIFICATIONS.yaml").write_bytes(CLASSIFICATIONS)
+            env = {key: value for key, value in os.environ.items() if key != "SOLO_ARCHITECTURE_ROOT"}
+            env["SOLO_ARCHITECTURE_SNAPSHOT"] = str(snapshot)
+            import _env
+            try:
+                with patch.dict(os.environ, env, clear=True):
+                    importlib.reload(_env)
+                    module = importlib.reload(function_share)
+                    module._store_registry.cache_clear()
+                    with patch.object(module, "open_store", lambda *a, **k: self.fail("store must not be called")):
+                        self.assertEqual(module.load_function_ids(), ["build-creation", "operations-execution"])
+            finally:
+                importlib.reload(_env)
+                importlib.reload(function_share)
 
 
 class StoreSettingsSwitchTest(unittest.TestCase):
