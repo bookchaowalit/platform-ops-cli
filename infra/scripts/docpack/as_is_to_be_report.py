@@ -35,6 +35,8 @@ SKIP_DIRS = {"node_modules", ".git", ".next", "dist", "build", ".venv", "venv", 
 STATUSES = ("done", "doing", "todo", "blocked", "decide")
 NO_TARGET = "ไม่มี To-Be ที่เขียนไว้"
 STALE_DAYS = 30
+# Problems that make the Gap table itself unreadable; the bar judges only these.
+TABLE_PROBLEMS = ("Gap ", "no Gap", "duplicate Gap", "G0 ", "no To-Be and no decide gap")
 
 REVIEWED_RE = re.compile(r"^Last reviewed:\s*(\d{4}-\d{2}-\d{2})(?:.*?commit\s+`([0-9a-f]{6,40})`)?", re.M)
 MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.S)
@@ -244,7 +246,7 @@ def parse_doc(text: str, today: dt.date) -> dict:
     # Only the contract phrase marks "no target"; any other written text To-Be is a target.
     # The phrase counts only when it opens the section; inside a written target it is a partial exception.
     # The phrase must open the section; Markdown emphasis/quote/list marks before it do not count as text.
-    opening = re.sub(r"^[\s*_>~`#-]+", "", to_be_note or "")
+    opening = re.sub(r"^(?:\s+|[*_>~`#]+|[-+]\s|\d+[.)]\s)+", "", to_be_note or "")
     no_target = to_be is None and (not to_be_note or opening.startswith(NO_TARGET))
     if no_target and not any(g["status"] == "decide" for g in gaps or []):
         problems.append("no To-Be and no decide gap asking the owner for one")
@@ -269,6 +271,7 @@ def parse_doc(text: str, today: dt.date) -> dict:
         "gaps": gaps or [],
         "gap_counts": counts,
         "standard": not problems,
+        "table_ok": not any(p.startswith(TABLE_PROBLEMS) for p in problems),
         "problems": problems,
     }
 
@@ -393,7 +396,7 @@ def render_system(s: dict) -> str:
   <summary>
     <div class="sh"><h2>{e(s["repo"].split("/")[-1])}</h2><span class="owner mono">{e(s["repo"])}</span></div>
     <div class="meta">{fresh}{std}<span class="done mono">{done}</span></div>
-    {bar(counts, s["gaps"], not any(not p.startswith("stale") for p in s["problems"]))}
+    {bar(counts, s["gaps"], s.get("table_ok", s["standard"]))}
   </summary>
   <p class="intro">{code_spans(s["summary"])}</p>
   {f'<ul class="probs">{problems}</ul>' if problems else ''}

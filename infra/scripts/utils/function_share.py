@@ -89,7 +89,11 @@ def _registry(name: str, path: Path | None) -> Any:
 def load_function_ids(path: Path | None = None) -> list[str]:
     """Return function IDs in registry order."""
     data = _registry(CLASSIFICATIONS_NAME, path)
-    return [row["id"] for row in data["functions"]]
+    rows = data.get("functions") if isinstance(data, dict) else None
+    ids = [row.get("id") for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if not ids or len(ids) != len(rows) or not all(isinstance(i, str) and i.strip() for i in ids):
+        raise ValueError(f"{REGISTRIES}/{CLASSIFICATIONS_NAME} is malformed: functions must be rows with a text id")
+    return ids
 
 
 def parse_functions(value: str | list[str] | None, valid: list[str] | None = None) -> list[str]:

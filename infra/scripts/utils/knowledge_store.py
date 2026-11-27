@@ -16,6 +16,7 @@ bodies and error text are never printed; failures carry only a status code.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import os
 import time
@@ -169,7 +170,8 @@ class KnowledgeStore:
             if exc.code == 409:
                 raise StoreConflict() from None
             raise StoreUnavailable(str(exc.code)) from None
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError):
+            # HTTPException covers a body cut mid-read (IncompleteRead).
             raise StoreUnavailable("unreachable") from None
 
     def get(self, path: str) -> tuple[bytes, int] | None:
