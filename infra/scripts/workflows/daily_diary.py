@@ -196,7 +196,15 @@ def record_conversation_summary(
     if not summary["question_summary"] or not summary["outcome_summary"]:
         raise ValueError("question_summary and outcome_summary are required")
 
-    function_ids = parse_functions(functions, load_function_ids()) if functions else []
+    function_ids: list[str] = []
+    if functions:
+        try:
+            valid = load_function_ids()
+        except (FileNotFoundError, StoreUnavailable) as exc:
+            # Offline with no local registry copy: keep the summary rather than lose the entry.
+            print(f"diary: functions not recorded, role registry unavailable ({exc})", file=sys.stderr)
+        else:
+            function_ids = parse_functions(functions, valid)
 
     stable_input = json.dumps({"date": day, **summary}, ensure_ascii=False, sort_keys=True)
     item_id = _clean(conversation_id, 64) if conversation_id else hashlib.sha256(
