@@ -30,20 +30,20 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _env import ARCHITECTURE_ROOT, KNOWLEDGE_ROOT  # noqa: E402
+from _env import KNOWLEDGE_ROOT, architecture_root, sibling_repo_root  # noqa: E402
 from knowledge_store import open_store  # noqa: E402
 
 # The role registries live in the hosted store, space architecture-docs (SPEC-001 D3, 2026-11-26).
-# A local copy wins when it has the file, found as `_env.architecture_root()` finds it:
-# SOLO_ARCHITECTURE_ROOT, else the hub's snapshot of the store space, else a checkout. Only then is
-# the store called. Diary entries live in the knowledge-base checkout (SOLO_KNOWLEDGE_ROOT).
+# A local copy wins when it has the file. The candidates are resolved per call, so a
+# SOLO_ARCHITECTURE_ROOT from infra/.env counts: that override alone when set, else the hub's
+# snapshot of the store space, else an architecture-docs checkout. Only then is the store called.
+# Diary entries live in the knowledge-base checkout (SOLO_KNOWLEDGE_ROOT).
+ARCHITECTURE_ROOT: Path | None = None  # tests pin one local root here
 ARCHITECTURE_SPACE = "architecture-docs"
 REGISTRIES = "docs/registries"
 CLASSIFICATIONS_NAME = "ROLE-CLASSIFICATIONS.yaml"
 ALIGNMENT_NAME = "ROLE-ECONOMIC-ALIGNMENT.yaml"
 
-ROLE_CLASSIFICATIONS = ARCHITECTURE_ROOT / REGISTRIES / CLASSIFICATIONS_NAME
-ROLE_ECONOMIC_ALIGNMENT = ARCHITECTURE_ROOT / REGISTRIES / ALIGNMENT_NAME
 DEFAULT_ENTRIES_ROOT = KNOWLEDGE_ROOT / "diary" / "entries"
 CONVERSATION_FILENAME = "conversation-summaries.json"
 DRIFT_THRESHOLD = 15
@@ -65,11 +65,24 @@ def _store_registry(name: str) -> str:
     return found[0].decode("utf-8")
 
 
+def _local_roots() -> list[Path]:
+    if ARCHITECTURE_ROOT is not None:
+        return [ARCHITECTURE_ROOT]
+    roots = [architecture_root()]
+    checkout = sibling_repo_root("architecture-docs")
+    if checkout not in roots:
+        roots.append(checkout)  # the snapshot may lack a file the checkout still has
+    return roots
+
+
 def _registry(name: str, path: Path | None) -> Any:
-    """An explicit path is read as given; otherwise a local copy, else the store."""
-    local = path if path is not None else ARCHITECTURE_ROOT / REGISTRIES / name
-    if path is not None or local.is_file():
-        return yaml.safe_load(local.read_text(encoding="utf-8"))
+    """An explicit path is read as given; otherwise the first local copy, else the store."""
+    if path is not None:
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    for root in _local_roots():
+        local = root / REGISTRIES / name
+        if local.is_file():
+            return yaml.safe_load(local.read_text(encoding="utf-8"))
     return yaml.safe_load(_store_registry(name))
 
 

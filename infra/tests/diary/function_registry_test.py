@@ -131,6 +131,45 @@ class SnapshotLookupTest(unittest.TestCase):
                 importlib.reload(function_share)
 
 
+class LookupOrderTest(unittest.TestCase):
+    """Local candidates are resolved per call (after infra/.env loads): override, snapshot, checkout."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        function_share._store_registry.cache_clear()
+        self.addCleanup(function_share._store_registry.cache_clear)
+
+    def tree(self, name: str, *, stamp: bool = False, registry: bytes | None = None) -> Path:
+        root = self.base / name
+        (root / "docs" / "registries").mkdir(parents=True)
+        if stamp:
+            (root / ".snapshot.json").write_text(json.dumps({"taken_at": "2999-01-01T00:00:00Z"}))
+        if registry is not None:
+            (root / "docs" / "registries" / "ROLE-CLASSIFICATIONS.yaml").write_bytes(registry)
+        return root
+
+    def no_store(self):
+        return patch.object(function_share, "open_store", lambda *a, **k: self.fail("store must not be called"))
+
+    def test_override_set_after_import_is_honoured(self) -> None:
+        override = self.tree("override", registry=b"functions:\n  - id: from-env-file\n")
+        env = {key: value for key, value in os.environ.items() if key != "SOLO_ARCHITECTURE_ROOT"}
+        env["SOLO_ARCHITECTURE_ROOT"] = str(override)  # what load_env() puts there from infra/.env
+        with patch.dict(os.environ, env, clear=True), self.no_store():
+            self.assertEqual(function_share.load_function_ids(), ["from-env-file"])
+
+    def test_checkout_is_used_when_the_snapshot_lacks_the_file(self) -> None:
+        snapshot = self.tree("snapshot", stamp=True)
+        checkout = self.tree("checkout", registry=b"functions:\n  - id: from-checkout\n")
+        env = {key: value for key, value in os.environ.items() if key != "SOLO_ARCHITECTURE_ROOT"}
+        env["SOLO_ARCHITECTURE_SNAPSHOT"] = str(snapshot)
+        with patch.dict(os.environ, env, clear=True), self.no_store(), \
+                patch.object(function_share, "sibling_repo_root", lambda repo: checkout):
+            self.assertEqual(function_share.load_function_ids(), ["from-checkout"])
+
+
 class StoreSettingsSwitchTest(unittest.TestCase):
     def test_diary_switch_only_applies_to_the_diary(self) -> None:
         env = {
