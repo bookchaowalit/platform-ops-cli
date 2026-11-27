@@ -77,16 +77,22 @@ def git_common_dir(repo: Path) -> str:
     return str(Path(out).resolve()) if out else str(repo.resolve())
 
 
-def repo_name(repo: Path, root: Path) -> str:
-    """owner/name from the origin remote; the folder layout is only a fallback (worktree names differ)."""
+def origin_name(repo: Path) -> str | None:
+    """owner/name of a GitHub origin remote, or None when there is none."""
     try:
         url = subprocess.run(["git", "-C", str(repo), "config", "--get", "remote.origin.url"],
                              capture_output=True, text=True, timeout=10, env=clean_git_env()).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         url = ""
     match = REMOTE_RE.search(url)
-    if match:
-        return f"{match.group(1)}/{match.group(2)}"
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def repo_name(repo: Path, root: Path) -> str:
+    """owner/name from the origin remote; the folder layout is only a fallback (worktree names differ)."""
+    named = origin_name(repo)
+    if named:
+        return named
     rel = repo.relative_to(root).parts
     owner = rel[0] if len(rel) > 1 else repo.parent.name
     return f"{owner}/{repo.name}"
@@ -268,12 +274,15 @@ def parse_doc(text: str, today: dt.date) -> dict:
 def collect(root: Path, today: dt.date) -> dict:
     root = root.resolve()
     systems, missing = [], []
-    # A clone and its linked worktrees share one origin: count the repository once, preferring the clone
-    # (its `.git` is a folder; a worktree's is a file). A worktree given alone as --root still counts.
-    # Keyed by the shared git directory, so two different repositories with the same fallback name both stay.
+    # One GitHub repository counts once: its clone, linked worktrees and any spare clone. Keyed by the
+    # origin's owner/name (GitHub names are case-insensitive); a checkout without a GitHub origin is keyed by
+    # its shared git directory, so two different repositories with the same fallback name both stay.
+    # The clone wins over a worktree (its `.git` is a folder; a worktree's is a file), else the first by path.
+    # A worktree given alone as --root still counts.
     chosen: dict[str, tuple[str, Path]] = {}
     for repo in find_repos(root):
-        key = git_common_dir(repo)
+        named = origin_name(repo)
+        key = f"origin:{named.lower()}" if named else f"gitdir:{git_common_dir(repo)}"
         if key not in chosen or ((repo / ".git").is_dir() and not (chosen[key][1] / ".git").is_dir()):
             chosen[key] = (repo_name(repo, root), repo)
     for name, repo in sorted(chosen.values(), key=lambda item: str(item[1])):

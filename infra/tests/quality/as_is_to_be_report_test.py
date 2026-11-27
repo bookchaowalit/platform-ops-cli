@@ -267,13 +267,35 @@ class CollectTest(unittest.TestCase):
                 repo.mkdir(parents=True)
                 subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(["git", "-C", str(a), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-                            "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+                            "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
             subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(root / "wt" / "demo-task")], check=True)
             import os
             from unittest import mock
             with mock.patch.dict(os.environ, {"GIT_DIR": str(a / ".git")}):  # as inside a git hook
                 data = report.collect(root, TODAY)
             self.assertEqual(data["missing"], ["x/demo", "x/demo"])  # both "demo" repos stay; the worktree folds into its clone
+
+    def test_two_clones_of_one_github_repo_count_once(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main, spare = root / "a" / "public" / "demo", root / "b" / "backup" / "demo-copy"
+            for repo in (main, spare):
+                repo.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                                "git@github.com:owner/demo.git" if repo is main else "https://github.com/owner/demo"], check=True)
+                (repo / "docs" / "diagrams").mkdir(parents=True)
+                (repo / "docs" / "diagrams" / "01-business-process.md").write_text(STANDARD, encoding="utf-8")
+            other = root / "a" / "public" / "other"
+            other.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(other)], check=True)  # no origin: keyed by its git dir
+            data = report.collect(root, TODAY)
+            self.assertEqual(data["repositories"], 2)
+            self.assertEqual([s["repo"] for s in data["systems"]], ["owner/demo"])
+            self.assertEqual(data["systems"][0]["path"], "a/public/demo")  # first by path wins
+            self.assertEqual(data["gap_totals"]["done"], 1)  # not doubled
+            self.assertEqual(data["waiting_owner"], 1)
 
     def test_waiting_owner_skips_duplicate_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
