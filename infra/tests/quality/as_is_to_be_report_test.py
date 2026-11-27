@@ -194,7 +194,8 @@ class ParseTest(unittest.TestCase):
         self.assertIn("Last reviewed date 2027-11-20 is in the future", future["problems"])
 
     def test_bold_no_target_phrase_still_needs_a_decide_gap(self):
-        for marked in ("**ไม่มี To-Be ที่เขียนไว้** รอ owner", "_ไม่มี To-Be ที่เขียนไว้_", "> ไม่มี To-Be ที่เขียนไว้"):
+        for marked in ("**ไม่มี To-Be ที่เขียนไว้** รอ owner", "_ไม่มี To-Be ที่เขียนไว้_", "> ไม่มี To-Be ที่เขียนไว้",
+                       "1. ไม่มี To-Be ที่เขียนไว้", "+ ไม่มี To-Be ที่เขียนไว้", "2) **ไม่มี To-Be ที่เขียนไว้**"):
             text = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", marked).replace("| decide |", "| todo |")
             self.assertIn("no To-Be and no decide gap asking the owner for one",
                           report.parse_doc(text, TODAY)["problems"], marked)
@@ -207,6 +208,14 @@ class ParseTest(unittest.TestCase):
         page = report.render_system({"repo": "o/r", "path": "r", **doc})
         self.assertIn("ไม่มี Gap (As-Is ตรงกับ To-Be)", page)
         self.assertNotIn("แก้ตารางก่อน", page)
+
+    def test_valid_g0_says_no_gap_when_only_the_review_line_is_wrong(self):
+        table = STANDARD.split("## Gap")[1].split("| G1 |")[0]
+        text = STANDARD.split("## Gap")[0] + "## Gap" + table + "| G0 | ไม่มี gap | done | owner | spec |\n"
+        doc = report.parse_doc(text.replace(" · commit `abc1234`", ""), TODAY)
+        self.assertIn("Last reviewed line has no commit", doc["problems"])
+        self.assertTrue(doc["table_ok"])
+        self.assertIn("ไม่มี Gap (As-Is ตรงกับ To-Be)", report.render_system({"repo": "o/r", "path": "r", **doc}))
 
     def test_only_the_contract_phrase_means_no_target(self):
         mixed = STANDARD.replace("```mermaid\nflowchart LR\n  A --> C\n```", "ยังไม่มี To-Be diagram แต่เป้าหมายคือย้ายไป shared mode").replace("| decide |", "| todo |")

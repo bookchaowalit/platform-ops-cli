@@ -97,6 +97,15 @@ class RegistryFromStoreTest(unittest.TestCase):
         with self.patched(None):
             self.assertEqual(function_share.load_function_ids(path), ["build-creation", "operations-execution"])
 
+    def test_malformed_ids_are_a_broken_registry(self) -> None:
+        for body in (b"functions:\n  - id: null\n", b"functions:\n  - id: 3\n", b"functions:\n  - id: ''\n",
+                     b"functions: nope\n", b"- just a list\n"):
+            function_share._store_registry.cache_clear()
+            store = FakeStore({"docs/registries/ROLE-CLASSIFICATIONS.yaml": body})
+            with self.subTest(body=body), self.patched(store):
+                with self.assertRaises(ValueError):
+                    function_share.load_function_ids()
+
     def test_clear_error_when_neither_exists(self) -> None:
         with self.patched(None):
             with self.assertRaises(FileNotFoundError) as caught:
@@ -222,6 +231,26 @@ class LookupOrderTest(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), self.no_store(), \
                 patch.object(function_share, "sibling_repo_root", lambda repo: checkout):
             self.assertEqual(function_share.load_function_ids(), ["from-checkout"])
+
+
+class StoreReadErrorTest(unittest.TestCase):
+    def test_cut_response_body_is_store_unavailable(self) -> None:
+        import http.client
+
+        class Cut:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                raise http.client.IncompleteRead(b"{", 10)
+
+        store = knowledge_store.KnowledgeStore("https://knowledge.example", "https://issuer.example", space="architecture-docs")
+        with patch.object(knowledge_store, "mint", lambda *a, **k: "t"), patch.object(store._opener, "open", lambda *a, **k: Cut()):
+            with self.assertRaises(knowledge_store.StoreUnavailable):
+                store.get("docs/registries/ROLE-CLASSIFICATIONS.yaml")
 
 
 class StoreSettingsSwitchTest(unittest.TestCase):
