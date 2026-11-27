@@ -159,6 +159,22 @@ class ParseTest(unittest.TestCase):
             data = report.collect(repo, TODAY)
             self.assertEqual((data["repositories"], data["with_doc"]), (1, 1))
 
+    def test_short_separator_and_id_problems(self):
+        short = STANDARD.replace("|---|---|---|---|---|", "| - | - | - | - | - |")
+        self.assertEqual(len(report.parse_doc(short, TODAY)["gaps"]), 4)
+        bad_id = report.parse_doc(STANDARD.replace("| G4 |", "| GAP4 |"), TODAY)
+        self.assertIn("Gap table has rows whose ID is not G<number>", bad_id["problems"])
+        both = report.parse_doc(STANDARD.replace("| G4 |", "| GAP4 |").replace("Last reviewed: 2026-11-20 · commit `abc1234`\n", ""), TODAY)
+        self.assertIn("no Last reviewed line", both["problems"])
+
+    def test_hub_checkout_root_still_finds_clones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hub = Path(tmp) / "hub"
+            (hub / ".git").mkdir(parents=True)
+            (hub / "repositories" / "github" / "owner" / "public" / "alpha" / ".git").mkdir(parents=True)
+            data = report.collect(hub, TODAY)
+            self.assertEqual(data["missing"], ["repositories/alpha"])  # no remote: falls back to the folder layout
+
     def test_stale_file(self):
         doc = report.parse_doc(STANDARD.replace("2026-11-20", "2026-09-01"), TODAY)
         self.assertFalse(doc["standard"])

@@ -20,6 +20,7 @@ import html
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,9 +39,11 @@ MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)```", re.S)
 
 
 def find_repos(root: Path) -> list[Path]:
-    """Every directory under root that holds a `.git` entry; does not descend into a repository."""
-    if (root / ".git").exists():  # a single checkout given directly as the root
-        return [root]
+    """Every directory under root that holds a `.git` entry; does not descend into a repository.
+
+    A root that is itself a checkout (the hub, or one worktree) is still searched for clones below it;
+    only when none are found is the root reported as the single repository.
+    """
     repos: list[Path] = []
     for current, dirs, _files in os.walk(root):
         here = Path(current)
@@ -49,7 +52,27 @@ def find_repos(root: Path) -> list[Path]:
             dirs[:] = []
             continue
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+    if not repos and (root / ".git").exists():
+        return [root]
     return sorted(repos)
+
+
+REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def repo_name(repo: Path, root: Path) -> str:
+    """owner/name from the origin remote; the folder layout is only a fallback (worktree names differ)."""
+    try:
+        url = subprocess.run(["git", "-C", str(repo), "config", "--get", "remote.origin.url"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        url = ""
+    match = REMOTE_RE.search(url)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+    rel = repo.relative_to(root).parts
+    owner = rel[0] if len(rel) > 1 else repo.parent.name
+    return f"{owner}/{repo.name}"
 
 
 def sections(text: str) -> list[tuple[str, str]]:
@@ -83,7 +106,7 @@ def parse_gaps(body: str) -> list[dict] | None:
             continue
         if in_table == "header":  # the next line must be the separator row
             sep = [c.strip() for c in line.strip().strip("|").split("|")]
-            if len(sep) != 5 or not all(re.fullmatch(r":?-{3,}:?", c) for c in sep):
+            if len(sep) != 5 or not all(re.fullmatch(r":?-+:?", c) for c in sep):
                 return None
             in_table = True
             continue
@@ -94,7 +117,8 @@ def parse_gaps(body: str) -> list[dict] | None:
             row = row[:-1]
         cells = [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", row)]
         if len(cells) != 5 or not re.fullmatch(r"G\d+", cells[0]):
-            gaps.append({"id": "?", "change": line.strip(), "status": "malformed", "owner": "", "evidence": ""})
+            why = "columns" if len(cells) != 5 else "id"
+            gaps.append({"id": "?", "change": line.strip(), "status": "malformed", "owner": "", "evidence": "", "why": why})
             continue
         status = cells[2].lower()
         evidence = cells[4]
@@ -145,8 +169,11 @@ def parse_doc(text: str, today: dt.date) -> dict:
     reviewed = REVIEWED_RE.search(text)
     reviewed_on = reviewed.group(1) if reviewed else None
     problems = []
-    if any(g["status"] == "malformed" for g in gaps or []):
+    bad = [g for g in gaps or [] if g["status"] == "malformed"]
+    if any(g["why"] == "columns" for g in bad):
         problems.append("Gap table has rows that do not match the five columns")
+    if any(g["why"] == "id" for g in bad):
+        problems.append("Gap table has rows whose ID is not G<number>")
     gaps = [g for g in gaps if g["status"] != "malformed"] if gaps is not None else None
     age = None
     if reviewed_on is not None:
@@ -155,7 +182,7 @@ def parse_doc(text: str, today: dt.date) -> dict:
         except ValueError:
             problems.append(f"invalid Last reviewed date {reviewed_on}")
             reviewed_on = None
-    elif not problems:  # no line at all (an invalid date was reported above)
+    else:  # no line at all (an invalid date is reported above)
         problems.append("no Last reviewed line")
     if reviewed is not None and reviewed_on is not None and not reviewed.group(2):
         problems.append("Last reviewed line has no commit")
@@ -199,11 +226,10 @@ def parse_doc(text: str, today: dt.date) -> dict:
 
 
 def collect(root: Path, today: dt.date) -> dict:
+    root = root.resolve()
     systems, missing = [], []
     for repo in find_repos(root):
-        rel = repo.relative_to(root).parts
-        owner = rel[0] if len(rel) > 1 else repo.parent.name
-        record = {"repo": f"{owner}/{repo.name}", "path": str(repo.relative_to(root)) if repo != root else repo.name}
+        record = {"repo": repo_name(repo, root), "path": str(repo.relative_to(root)) if repo != root else repo.name}
         doc = repo / DOC
         # Only a regular file inside the clone: no symlink anywhere from the clone down to the file.
         chain = [repo / "docs", repo / "docs" / "diagrams", doc]
