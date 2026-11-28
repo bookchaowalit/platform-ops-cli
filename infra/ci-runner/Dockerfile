@@ -2,6 +2,8 @@
 # Railway containers cannot start Docker, so job `services:` containers are not
 # available; PostgreSQL 17 is installed here and started by the job instead.
 FROM myoung34/github-runner:ubuntu-noble
+# The weekly podman prune on the Fedora docker runners skips images with this label (run-docker.sh).
+LABEL io.bookchaowalit.ci-runner="keep"
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -111,16 +111,41 @@ DOCKER_BUILDKIT=0
 EOF
 }
 
+install_prune_script() {
+  # Prune script on the host, run by up and by the weekly timer. Older runner images keep the label,
+  # so the filtered prune skips them: remove every labelled image except the one the unit runs (one
+  # still used by a container fails rmi and is retried next week), then prune the rest.
+  remote "$AS bash -c 'umask 077; mkdir -p ~/.local/bin && cat > ~/.local/bin/ci-runner-prune && chmod 700 ~/.local/bin/ci-runner-prune'" <<'SCRIPT'
+#!/bin/sh
+cur=$(sed -n 's/^Image=//p' "$HOME/.config/containers/systemd/ci-runner-docker.container")
+for id in $(podman images -q --no-trunc --filter label=io.bookchaowalit.ci-runner=keep); do
+  id=${id#sha256:}
+  [ "$id" = "$cur" ] || podman rmi "$id" >/dev/null 2>&1 || true
+done
+exec podman system prune --all --force --filter until=168h --filter label!=io.bookchaowalit.ci-runner=keep
+SCRIPT
+}
+
 install_prune() {
-  # Weekly: drop images, build cache and stopped containers unused for 7 days. The runner image is
-  # in use by the running container, so it stays.
+  # Refuse while the image the unit runs lacks the keep label: the filtered prune would delete it.
+  local unit_image keep
+  unit_image=$(remote "$AS sed -n 's/^Image=//p' /home/ci-docker/.config/containers/systemd/$UNIT.container" || true)
+  # ci-docker (and so any job) can write that file: accept only a bare image ID before reusing it.
+  [[ $unit_image =~ ^[0-9a-f]{64}$ ]] || { echo "unit image is not an image ID: run '$0 up' first" >&2; exit 1; }
+  keep=$(remote "$AS podman image inspect --format '{{index .Labels \"io.bookchaowalit.ci-runner\"}}' $unit_image" 2>/dev/null || true)
+  [[ $keep == keep ]] || { echo "the unit's image ${unit_image:0:12} has no keep label: run '$0 up' first" >&2; exit 1; }
+  # Weekly: drop images, build cache and stopped containers unused for 7 days. The runner image
+  # carries LABEL io.bookchaowalit.ci-runner=keep and is skipped: the timer is Persistent, so after a
+  # reboot it can fire before the runner container starts, and an unfiltered prune then deleted the
+  # image (2026-11-22: every docker-* runner offline until run-docker.sh up reloaded it).
   remote "$AS bash -c 'mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/podman-ci-prune.service <<EOF
 [Unit]
 Description=Prune old CI images and build cache (ci-docker)
+After=$UNIT.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/podman system prune --all --force --filter until=168h
+ExecStart=%h/.local/bin/ci-runner-prune
 EOF
 cat > ~/.config/systemd/user/podman-ci-prune.timer <<EOF
 [Unit]
@@ -137,8 +162,8 @@ systemctl --user daemon-reload && systemctl --user enable --now podman-ci-prune.
 }
 
 case ${1:-status} in
-  up) load_image; register; install_unit; install_prune ;;
-  prune-timer) install_prune ;;
+  up) load_image; register; install_unit; install_prune_script; install_prune ;;
+  prune-timer) install_prune_script; install_prune ;;
   down) remote "$AS systemctl --user stop $UNIT.service" ;;
   status)
     remote "$AS systemctl --user is-active $UNIT.service" || true
