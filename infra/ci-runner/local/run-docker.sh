@@ -118,7 +118,8 @@ install_prune_script() {
   remote "$AS bash -c 'umask 077; mkdir -p ~/.local/bin && cat > ~/.local/bin/ci-runner-prune && chmod 700 ~/.local/bin/ci-runner-prune'" <<'SCRIPT'
 #!/bin/sh
 cur=$(sed -n 's/^Image=//p' "$HOME/.config/containers/systemd/ci-runner-docker.container")
-for id in $(podman images -q --no-trunc --filter label=io.bookchaowalit.ci-runner=keep); do
+# Only images older than a day: up loads a new image before the unit switches to it.
+for id in $(podman images -q --no-trunc --filter label=io.bookchaowalit.ci-runner=keep --filter until=24h); do
   id=${id#sha256:}
   [ "$id" = "$cur" ] || podman rmi "$id" >/dev/null 2>&1 || true
 done

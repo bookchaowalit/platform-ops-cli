@@ -55,7 +55,8 @@ def find_repos(root: Path) -> list[Path]:
             repos.append(here)
             dirs[:] = []
             continue
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+        # A dot-named checkout (an owner's `.github` profile repo) still counts; other dot dirs are skipped.
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and (not d.startswith(".") or (here / d / ".git").exists()))
     if not repos and (root / ".git").exists():
         return [root]
     return sorted(repos)

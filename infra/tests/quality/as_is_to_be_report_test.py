@@ -175,6 +175,15 @@ class ParseTest(unittest.TestCase):
             data = report.collect(hub, TODAY)
             self.assertEqual(data["missing"], ["repositories/alpha"])  # no remote: falls back to the folder layout
 
+    def test_dot_named_checkout_is_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "owner" / ".github" / ".git").mkdir(parents=True)
+            (root / "owner" / "alpha" / ".git").mkdir(parents=True)
+            (root / "owner" / ".cache" / "beta" / ".git").mkdir(parents=True)  # dot dir that is not a checkout
+            names = [p.name for p in report.find_repos(root)]
+            self.assertEqual(names, [".github", "alpha"])
+
     def test_unknown_status_and_duplicate_ids_are_problems(self):
         typo = report.parse_doc(STANDARD.replace("| todo | owner | x |", "| waiting | owner | x |"), TODAY)
         self.assertIn("Gap status not one of done|doing|todo|blocked|decide: waiting", typo["problems"])
